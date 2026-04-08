@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
 
 env:
   CGO_CFLAGS: '-O3'
@@ -16,7 +17,7 @@ jobs:
     outputs:
       GOFLAGS: ${{ steps.goflags.outputs.GOFLAGS }}
       VERSION: ${{ steps.goflags.outputs.VERSION }}
-      vendorsha: ${{ steps.changes.outputs.vendorsha }}
+      vendorsha: ${{ steps.goflags.outputs.vendorsha }}
     steps:
       - uses: actions/checkout@v4
       - name: Set environment
