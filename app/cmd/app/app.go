@@ -24,7 +24,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/ollama/ollama/app/auth"
 	"github.com/ollama/ollama/app/logrotate"
-	"github.com/ollama/ollama/app/server"
 	"github.com/ollama/ollama/app/store"
 	"github.com/ollama/ollama/app/tools"
 	"github.com/ollama/ollama/app/ui"
@@ -241,32 +240,16 @@ func main() {
 	// ctx is the app-level context that will be used to stop the app
 	ctx, cancel := context.WithCancel(context.Background())
 
-	// octx is the ollama server context that will be used to stop the ollama server
-	octx, ocancel := context.WithCancel(ctx)
-
 	// TODO (jmorganca): instead we should instantiate the
 	// webview with the store instead of assigning it here, however
 	// making the webview a global variable is easier for now
 	wv.Store = st
-	done := make(chan error, 1)
-	osrv := server.New(st, devMode)
-	go func() {
-		slog.Info("starting ollama server")
-		done <- osrv.Run(octx)
-	}()
 
 	upd := &updater.Updater{Store: st}
 
 	uiServer := ui.Server{
 		Token: token,
-		Restart: func() {
-			ocancel()
-			<-done
-			octx, ocancel = context.WithCancel(ctx)
-			go func() {
-				done <- osrv.Run(octx)
-			}()
-		},
+		Restart:      func() {},
 		Store:        st,
 		ToolRegistry: toolRegistry,
 		Dev:          devMode,
@@ -337,11 +320,6 @@ func main() {
 	}
 
 	go func() {
-		slog.Debug("waiting for ollama server to be ready")
-		if err := ui.WaitForServer(ctx, 10*time.Second); err != nil {
-			slog.Warn("ollama server not ready, continuing anyway", "error", err)
-		}
-
 		if _, err := uiServer.UserData(ctx); err != nil {
 			slog.Warn("failed to load user data", "error", err)
 		}
@@ -354,9 +332,7 @@ func main() {
 		slog.Warn("error shutting down desktop server", "error", err)
 	}
 
-	slog.Info("shutting down ollama server")
 	cancel()
-	<-done
 }
 
 func startHiddenTasks() {

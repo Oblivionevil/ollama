@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
-	"github.com/ollama/ollama/logutil"
 )
 
 func TestHost(t *testing.T) {
@@ -343,7 +342,7 @@ func TestLogLevel(t *testing.T) {
 
 		// Positive values increase verbosity
 		"1": slog.LevelDebug,
-		"2": logutil.LevelTrace,
+		"2": slog.Level(-8),
 
 		// Negative values decrease verbosity
 		"-1": slog.LevelWarn,

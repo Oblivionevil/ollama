@@ -11,11 +11,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"net/http/httputil"
 	"os"
 	"runtime"
 	"runtime/debug"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,7 +21,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/ollama/ollama/api"
-	"github.com/ollama/ollama/app/server"
 	"github.com/ollama/ollama/app/store"
 	"github.com/ollama/ollama/app/tools"
 	"github.com/ollama/ollama/app/types/not"
@@ -31,8 +28,6 @@ import (
 	"github.com/ollama/ollama/app/updater"
 	"github.com/ollama/ollama/app/version"
 	"github.com/ollama/ollama/envconfig"
-	"github.com/ollama/ollama/manifest"
-	"github.com/ollama/ollama/types/model"
 	_ "github.com/tkrajina/typescriptify-golang-structs/typescriptify"
 )
 
@@ -126,67 +121,15 @@ func (s *Server) log() *slog.Logger {
 	return s.Logger
 }
 
-// ollamaProxy creates a reverse proxy handler to the Ollama server
-func (s *Server) ollamaProxy() http.Handler {
-	var (
-		proxy   http.Handler
-		proxyMu sync.Mutex
-	)
+func (s *Server) apiVersion(w http.ResponseWriter, r *http.Request) error {
+	w.Header().Set("Content-Type", "application/json")
+	return json.NewEncoder(w).Encode(map[string]string{"version": version.Version})
+}
 
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		proxyMu.Lock()
-		p := proxy
-		proxyMu.Unlock()
-
-		if p == nil {
-			proxyMu.Lock()
-			if proxy == nil {
-				var err error
-				for i := range 2 {
-					if i > 0 {
-						s.log().Warn("ollama server not ready, retrying", "attempt", i+1)
-						time.Sleep(1 * time.Second)
-					}
-
-					err = WaitForServer(context.Background(), 10*time.Second)
-					if err == nil {
-						break
-					}
-				}
-
-				if err != nil {
-					proxyMu.Unlock()
-					s.log().Error("ollama server not ready after retries", "error", err)
-					http.Error(w, "Ollama server is not ready", http.StatusServiceUnavailable)
-					return
-				}
-
-				target := envconfig.ConnectableHost()
-				s.log().Info("configuring ollama proxy", "target", target.String())
-
-				newProxy := httputil.NewSingleHostReverseProxy(target)
-
-				originalDirector := newProxy.Director
-				newProxy.Director = func(req *http.Request) {
-					originalDirector(req)
-					req.Host = target.Host
-					s.log().Debug("proxying request", "method", req.Method, "path", req.URL.Path, "target", target.Host)
-				}
-
-				newProxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-					s.log().Error("proxy error", "error", err, "path", r.URL.Path, "target", target.String())
-					http.Error(w, "proxy error: "+err.Error(), http.StatusBadGateway)
-				}
-
-				proxy = newProxy
-				p = newProxy
-			} else {
-				p = proxy
-			}
-			proxyMu.Unlock()
-		}
-
-		p.ServeHTTP(w, r)
+func (s *Server) apiStatus(w http.ResponseWriter, r *http.Request) error {
+	w.Header().Set("Content-Type", "application/json")
+	return json.NewEncoder(w).Encode(api.StatusResponse{
+		Cloud: api.CloudStatus{Disabled: false, Source: "copilot"},
 	})
 }
 
@@ -297,13 +240,11 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/settings", handle(s.getSettings))
 	mux.Handle("POST /api/v1/settings", handle(s.settings))
 
-	// Ollama proxy endpoints
-	ollamaProxy := s.ollamaProxy()
 	mux.Handle("GET /api/tags", handle(s.copilotTagsHandler))
 	mux.Handle("POST /api/show", handle(s.copilotShowHandler))
-	mux.Handle("GET /api/version", ollamaProxy)
-	mux.Handle("GET /api/status", ollamaProxy)
-	mux.Handle("HEAD /api/version", ollamaProxy)
+	mux.Handle("GET /api/version", handle(s.apiVersion))
+	mux.Handle("GET /api/status", handle(s.apiStatus))
+	mux.Handle("HEAD /api/version", handle(s.apiVersion))
 	mux.Handle("POST /api/me", handle(s.copilotUserHandler))
 	mux.Handle("POST /api/signout", handle(s.copilotSignOutHandler))
 	mux.HandleFunc("GET /auth/github", s.copilotAuthPageHandler)
@@ -422,10 +363,6 @@ func WaitForServer(ctx context.Context, timeout time.Duration) error {
 }
 
 func (s *Server) createChat(w http.ResponseWriter, r *http.Request) error {
-	if err := WaitForServer(r.Context(), 10*time.Second); err != nil {
-		return err
-	}
-
 	id, err := uuid.NewV7()
 	if err != nil {
 		return fmt.Errorf("failed to generate chat ID: %w", err)
@@ -727,513 +664,19 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) error {
 			flusher.Flush()
 			return nil
 		}
-		s.log().Warn("failed to resolve remote model, falling back to local path", "model", req.Model, "error", err)
+		s.log().Error("failed to resolve remote model", "model", req.Model, "error", err)
+		errorEvent := s.getError(err)
+		json.NewEncoder(w).Encode(errorEvent)
+		flusher.Flush()
+		return nil
 	}
 	if remoteModel != nil {
 		return s.chatCopilot(r.Context(), w, flusher, chat, req, remoteModel)
 	}
-
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
-
-	_, cancelLoading := context.WithCancel(ctx)
-	loading := false
-
-	c := s.inferenceClient()
-
-	// Check if the model exists locally by trying to show it
-	// TODO (jmorganca): skip this round trip and instead just act
-	// on a 404 error on chat
-	_, err = c.Show(ctx, &api.ShowRequest{Model: req.Model})
-	if err != nil || req.ForceUpdate {
-		// Create an empty assistant message to store the model information
-		// This will be overwritten when the model responds
-		chat.Messages = append(chat.Messages, store.NewMessage("assistant", "", &store.MessageOptions{Model: req.Model}))
-		if err := s.Store.SetChat(*chat); err != nil {
-			cancelLoading()
-			return err
-		}
-		// Send download progress events while the model is being pulled
-		// TODO (jmorganca): this only shows the largest digest, but we
-		// should show the progress for the total size of the download
-		var largestDigest string
-		var largestTotal int64
-
-		err = c.Pull(ctx, &api.PullRequest{Model: req.Model}, func(progress api.ProgressResponse) error {
-			if progress.Digest != "" && progress.Total > largestTotal {
-				largestDigest = progress.Digest
-				largestTotal = progress.Total
-			}
-
-			if progress.Digest != "" && progress.Digest == largestDigest {
-				progressEvent := responses.DownloadEvent{
-					EventName: string(EventDownload),
-					Total:     progress.Total,
-					Completed: progress.Completed,
-					Done:      false,
-				}
-
-				if err := json.NewEncoder(w).Encode(progressEvent); err != nil {
-					return err
-				}
-				flusher.Flush()
-			}
-			return nil
-		})
-		if err != nil {
-			s.log().Error("model download error", "error", err, "model", req.Model)
-			errorEvent := s.getError(err)
-			json.NewEncoder(w).Encode(errorEvent)
-			flusher.Flush()
-			cancelLoading()
-			return fmt.Errorf("failed to download model: %w", err)
-		}
-
-		if err := json.NewEncoder(w).Encode(responses.DownloadEvent{
-			EventName: string(EventDownload),
-			Completed: largestTotal,
-			Total:     largestTotal,
-			Done:      true,
-		}); err != nil {
-			cancelLoading()
-			return err
-		}
-		flusher.Flush()
-
-		// If forceUpdate, we're done after updating the model
-		if req.ForceUpdate {
-			json.NewEncoder(w).Encode(responses.ChatEvent{EventName: "done"})
-			flusher.Flush()
-			cancelLoading()
-			return nil
-		}
-	}
-
-	loading = true
-	defer cancelLoading()
-
-	// Check the model capabilities
-	details, err := c.Show(ctx, &api.ShowRequest{Model: req.Model})
-
-	if err != nil || details == nil {
-		errorEvent := s.getError(err)
-		json.NewEncoder(w).Encode(errorEvent)
-		flusher.Flush()
-		s.log().Error("failed to show model details", "error", err, "model", req.Model)
-		return nil
-	}
-	think := slices.Contains(details.Capabilities, model.CapabilityThinking)
-
-	var thinkValue any
-
-	if req.Think != nil {
-		thinkValue = req.Think
-	} else {
-		thinkValue = think
-	}
-
-	// Check if the last user message has attachments
-	// TODO (parthsareen): this logic will change with directory drag and drop
-	hasAttachments := false
-	if len(chat.Messages) > 0 {
-		lastMsg := chat.Messages[len(chat.Messages)-1]
-		if lastMsg.Role == "user" && len(lastMsg.Attachments) > 0 {
-			hasAttachments = true
-		}
-	}
-
-	// Check if agent or tools mode is enabled
-	// Note: Skip agent/tools mode if user has attachments, as the agent doesn't handle file attachments properly
-	registry := tools.NewRegistry()
-	var browser *tools.Browser
-
-	if !hasAttachments {
-		WebSearchEnabled := req.WebSearch != nil && *req.WebSearch
-		hasToolsCapability := slices.Contains(details.Capabilities, model.CapabilityTools)
-
-		if WebSearchEnabled && hasToolsCapability {
-			if supportsBrowserTools(req.Model) {
-				browserState, ok := s.browserState(chat)
-				if !ok {
-					browserState = reconstructBrowserState(chat.Messages, tools.DefaultViewTokens)
-				}
-				browser = tools.NewBrowser(browserState)
-				registry.Register(tools.NewBrowserSearch(browser))
-				registry.Register(tools.NewBrowserOpen(browser))
-				registry.Register(tools.NewBrowserFind(browser))
-			} else {
-				registry.Register(&tools.WebSearch{})
-				registry.Register(&tools.WebFetch{})
-			}
-		}
-	}
-
-	var thinkingTimeStart *time.Time = nil
-	var thinkingTimeEnd *time.Time = nil
-	// Request-only assistant tool_calls buffer
-	// if tool_calls arrive before any assistant text, we keep them here,
-	// inject them into the next request, and attach on first assistant content/thinking.
-	var pendingAssistantToolCalls []store.ToolCall
-
-	passNum := 1
-
-	for {
-		var toolsExecuted bool
-
-		availableTools := registry.AvailableTools()
-
-		// If we have pending assistant tool_calls and no assistant yet,
-		// build the request against a temporary chat that includes a
-		// request-only assistant with tool_calls inserted BEFORE tool messages
-		reqChat := chat
-		if len(pendingAssistantToolCalls) > 0 {
-			if len(chat.Messages) == 0 || chat.Messages[len(chat.Messages)-1].Role != "assistant" {
-				temp := *chat
-				synth := store.NewMessage("assistant", "", &store.MessageOptions{Model: req.Model, ToolCalls: pendingAssistantToolCalls})
-				insertIdx := len(temp.Messages) - 1
-				for insertIdx >= 0 && temp.Messages[insertIdx].Role == "tool" {
-					insertIdx--
-				}
-				if insertIdx < 0 {
-					temp.Messages = append([]store.Message{synth}, temp.Messages...)
-				} else {
-					tmp := make([]store.Message, 0, len(temp.Messages)+1)
-					tmp = append(tmp, temp.Messages[:insertIdx+1]...)
-					tmp = append(tmp, synth)
-					tmp = append(tmp, temp.Messages[insertIdx+1:]...)
-					temp.Messages = tmp
-				}
-
-				reqChat = &temp
-			}
-		}
-		chatReq, err := s.buildChatRequest(reqChat, req.Model, thinkValue, availableTools)
-		if err != nil {
-			return err
-		}
-
-		err = c.Chat(ctx, chatReq, func(res api.ChatResponse) error {
-			if loading {
-				// Remove the loading indicator on first token
-				cancelLoading()
-				loading = false
-			}
-
-			// Start thinking timer on first thinking content or after tool call when thinking again
-			if res.Message.Thinking != "" && (thinkingTimeStart == nil || thinkingTimeEnd != nil) {
-				now := time.Now()
-				thinkingTimeStart = &now
-				thinkingTimeEnd = nil
-			}
-
-			if res.Message.Content == "" && res.Message.Thinking == "" && len(res.Message.ToolCalls) == 0 {
-				return nil
-			}
-
-			event := EventChat
-			if thinkingTimeStart != nil && res.Message.Content == "" && len(res.Message.ToolCalls) == 0 {
-				event = EventThinking
-			}
-
-			if len(res.Message.ToolCalls) > 0 {
-				event = EventToolCall
-			}
-
-			if event == EventToolCall && thinkingTimeStart != nil && thinkingTimeEnd == nil {
-				now := time.Now()
-				thinkingTimeEnd = &now
-			}
-
-			if event == EventChat && thinkingTimeStart != nil && thinkingTimeEnd == nil && res.Message.Content != "" {
-				now := time.Now()
-				thinkingTimeEnd = &now
-			}
-
-			json.NewEncoder(w).Encode(chatEventFromApiChatResponse(res, thinkingTimeStart, thinkingTimeEnd))
-			flusher.Flush()
-
-			switch event {
-			case EventToolCall:
-				if thinkingTimeEnd != nil {
-					if len(chat.Messages) > 0 && chat.Messages[len(chat.Messages)-1].Role == "assistant" {
-						lastMsg := &chat.Messages[len(chat.Messages)-1]
-						lastMsg.ThinkingTimeEnd = thinkingTimeEnd
-						lastMsg.UpdatedAt = time.Now()
-						s.Store.UpdateLastMessage(chat.ID, *lastMsg)
-					}
-					thinkingTimeStart = nil
-					thinkingTimeEnd = nil
-				}
-
-				// attach tool_calls to an existing assistant if present,
-				// otherwise (for standalone web_search/web_fetch) buffer for request-only injection.
-				if len(res.Message.ToolCalls) > 0 {
-					if len(chat.Messages) > 0 && chat.Messages[len(chat.Messages)-1].Role == "assistant" {
-						toolCalls := make([]store.ToolCall, len(res.Message.ToolCalls))
-						for i, tc := range res.Message.ToolCalls {
-							argsJSON, _ := json.Marshal(tc.Function.Arguments)
-							toolCalls[i] = store.ToolCall{
-								Type: "function",
-								Function: store.ToolFunction{
-									Name:      tc.Function.Name,
-									Arguments: string(argsJSON),
-								},
-							}
-						}
-						lastMsg := &chat.Messages[len(chat.Messages)-1]
-						lastMsg.ToolCalls = toolCalls
-						if err := s.Store.UpdateLastMessage(chat.ID, *lastMsg); err != nil {
-							return err
-						}
-					} else {
-						onlyStandalone := true
-						for _, tc := range res.Message.ToolCalls {
-							if !(tc.Function.Name == "web_search" || tc.Function.Name == "web_fetch") {
-								onlyStandalone = false
-								break
-							}
-						}
-						if onlyStandalone {
-							toolCalls := make([]store.ToolCall, len(res.Message.ToolCalls))
-							for i, tc := range res.Message.ToolCalls {
-								argsJSON, _ := json.Marshal(tc.Function.Arguments)
-								toolCalls[i] = store.ToolCall{
-									Type: "function",
-									Function: store.ToolFunction{
-										Name:      tc.Function.Name,
-										Arguments: string(argsJSON),
-									},
-								}
-							}
-
-							synth := store.NewMessage("assistant", "", &store.MessageOptions{Model: req.Model, ToolCalls: toolCalls})
-							chat.Messages = append(chat.Messages, synth)
-							if err := s.Store.AppendMessage(chat.ID, synth); err != nil {
-								return err
-							}
-
-							// clear buffer to avoid-injecting again
-							pendingAssistantToolCalls = nil
-						}
-					}
-				}
-
-				for _, toolCall := range res.Message.ToolCalls {
-					// continues loop as tools were executed
-					toolsExecuted = true
-					result, content, err := registry.Execute(ctx, toolCall.Function.Name, toolCall.Function.Arguments.ToMap())
-					if err != nil {
-						errContent := fmt.Sprintf("Error: %v", err)
-						toolErrMsg := store.NewMessage("tool", errContent, nil)
-						toolErrMsg.ToolName = toolCall.Function.Name
-						chat.Messages = append(chat.Messages, toolErrMsg)
-						if err := s.Store.AppendMessage(chat.ID, toolErrMsg); err != nil {
-							return err
-						}
-
-						// Emit tool error event
-						toolResult := true
-						json.NewEncoder(w).Encode(responses.ChatEvent{
-							EventName: "tool",
-							Content:   &errContent,
-							ToolName:  &toolCall.Function.Name,
-						})
-						flusher.Flush()
-
-						json.NewEncoder(w).Encode(responses.ChatEvent{
-							EventName:      "tool_result",
-							Content:        &errContent,
-							ToolName:       &toolCall.Function.Name,
-							ToolResult:     &toolResult,
-							ToolResultData: nil, // No result data for errors
-						})
-						flusher.Flush()
-						continue
-					}
-
-					var tr json.RawMessage
-					if strings.HasPrefix(toolCall.Function.Name, "browser.search") {
-						// For standalone web_search, ensure the tool message has readable content
-						// so the second-pass model can consume results, while keeping browser state flow intact.
-						// We still persist tool msg with content below.
-						// (No browser state update needed for standalone.)
-					} else if strings.HasPrefix(toolCall.Function.Name, "browser") {
-						stateBytes, err := json.Marshal(browser.State())
-						if err != nil {
-							return fmt.Errorf("failed to marshal browser state: %w", err)
-						}
-						if err := s.Store.UpdateChatBrowserState(chat.ID, json.RawMessage(stateBytes)); err != nil {
-							return fmt.Errorf("failed to persist browser state to chat: %w", err)
-						}
-						// tool result is not added to the tool message for the browser tool
-					} else {
-						var err error
-						tr, err = json.Marshal(result)
-						if err != nil {
-							return fmt.Errorf("failed to marshal tool result: %w", err)
-						}
-					}
-					// ensure tool message sent back to the model has content (if empty, use a sensible fallback)
-					modelContent := content
-					if toolCall.Function.Name == "web_fetch" && modelContent == "" {
-						if str, ok := result.(string); ok {
-							modelContent = str
-						}
-					}
-					if modelContent == "" && len(tr) > 0 {
-						s.log().Debug("tool message empty, sending json result")
-						modelContent = string(tr)
-					}
-					toolMsg := store.NewMessage("tool", modelContent, &store.MessageOptions{
-						ToolResult: &tr,
-					})
-					toolMsg.ToolName = toolCall.Function.Name
-					chat.Messages = append(chat.Messages, toolMsg)
-
-					s.Store.AppendMessage(chat.ID, toolMsg)
-
-					// Emit tool message event (matching agent pattern)
-					toolResult := true
-					json.NewEncoder(w).Encode(responses.ChatEvent{
-						EventName: "tool",
-						Content:   &content,
-						ToolName:  &toolCall.Function.Name,
-					})
-					flusher.Flush()
-
-					var toolState any = nil
-					if browser != nil {
-						toolState = browser.State()
-					}
-					// Stream tool result to frontend
-
-					json.NewEncoder(w).Encode(responses.ChatEvent{
-						EventName:      "tool_result",
-						Content:        &content,
-						ToolName:       &toolCall.Function.Name,
-						ToolResult:     &toolResult,
-						ToolResultData: result,
-						ToolState:      toolState,
-					})
-					flusher.Flush()
-				}
-
-			case EventChat:
-				// Append the new message to the chat history
-				if len(chat.Messages) == 0 || chat.Messages[len(chat.Messages)-1].Role != "assistant" {
-					newMsg := store.NewMessage("assistant", "", &store.MessageOptions{Model: req.Model})
-					chat.Messages = append(chat.Messages, newMsg)
-					// Append new message to database
-					if err := s.Store.AppendMessage(chat.ID, newMsg); err != nil {
-						return err
-					}
-					// Attach any buffered tool_calls (request-only) now that assistant has started
-					if len(pendingAssistantToolCalls) > 0 {
-						lastMsg := &chat.Messages[len(chat.Messages)-1]
-						lastMsg.ToolCalls = pendingAssistantToolCalls
-
-						pendingAssistantToolCalls = nil
-						if err := s.Store.UpdateLastMessage(chat.ID, *lastMsg); err != nil {
-							return err
-						}
-					}
-				}
-
-				// Append token to last assistant message & persist
-				lastMsg := &chat.Messages[len(chat.Messages)-1]
-				lastMsg.Content += res.Message.Content
-				lastMsg.UpdatedAt = time.Now()
-				// Update thinking time fields
-				if thinkingTimeStart != nil {
-					lastMsg.ThinkingTimeStart = thinkingTimeStart
-				}
-				if thinkingTimeEnd != nil {
-					lastMsg.ThinkingTimeEnd = thinkingTimeEnd
-				}
-				// Use optimized update for streaming
-				if err := s.Store.UpdateLastMessage(chat.ID, *lastMsg); err != nil {
-					return err
-				}
-			case EventThinking:
-				// Persist thinking content
-				if len(chat.Messages) == 0 || chat.Messages[len(chat.Messages)-1].Role != "assistant" {
-					newMsg := store.NewMessage("assistant", "", &store.MessageOptions{
-						Model:    req.Model,
-						Thinking: res.Message.Thinking,
-					})
-					chat.Messages = append(chat.Messages, newMsg)
-					// Append new message to database
-					if err := s.Store.AppendMessage(chat.ID, newMsg); err != nil {
-						return err
-					}
-					// Attach any buffered tool_calls now that assistant exists
-					if len(pendingAssistantToolCalls) > 0 {
-						lastMsg := &chat.Messages[len(chat.Messages)-1]
-						lastMsg.ToolCalls = pendingAssistantToolCalls
-
-						pendingAssistantToolCalls = nil
-						if err := s.Store.UpdateLastMessage(chat.ID, *lastMsg); err != nil {
-							return err
-						}
-					}
-				} else {
-					// Update thinking content of existing message
-					lastMsg := &chat.Messages[len(chat.Messages)-1]
-					lastMsg.Thinking += res.Message.Thinking
-					lastMsg.UpdatedAt = time.Now()
-					// Update thinking time fields
-					if thinkingTimeStart != nil {
-						lastMsg.ThinkingTimeStart = thinkingTimeStart
-					}
-					if thinkingTimeEnd != nil {
-						lastMsg.ThinkingTimeEnd = thinkingTimeEnd
-					}
-
-					// Use optimized update for streaming
-					if err := s.Store.UpdateLastMessage(chat.ID, *lastMsg); err != nil {
-						return err
-					}
-				}
-			}
-			return nil
-		})
-		if err != nil {
-			s.log().Error("chat stream error", "error", err)
-			errorEvent := s.getError(err)
-			json.NewEncoder(w).Encode(errorEvent)
-			flusher.Flush()
-			return nil
-		}
-
-		// If no tools were executed, exit the loop
-		if !toolsExecuted {
-			break
-		}
-
-		passNum++
-	}
-
-	// handle cases where thinking started but didn't finish
-	// this can happen if the client disconnects or the request is cancelled
-	// TODO (jmorganca): this should be merged with code above
-	if thinkingTimeStart != nil && thinkingTimeEnd == nil {
-		now := time.Now()
-		thinkingTimeEnd = &now
-		if len(chat.Messages) > 0 && chat.Messages[len(chat.Messages)-1].Role == "assistant" {
-			lastMsg := &chat.Messages[len(chat.Messages)-1]
-			lastMsg.ThinkingTimeEnd = thinkingTimeEnd
-			lastMsg.UpdatedAt = time.Now()
-			s.Store.UpdateLastMessage(chat.ID, *lastMsg)
-		}
-	}
-
-	json.NewEncoder(w).Encode(responses.ChatEvent{EventName: "done"})
+	errorEvent := s.getError(fmt.Errorf("model %q is not available in GitHub Copilot", req.Model))
+	json.NewEncoder(w).Encode(errorEvent)
 	flusher.Flush()
-
-	if len(chat.Messages) > 0 {
-		chat.Messages[len(chat.Messages)-1].Stream = false
-	}
-	return s.Store.SetChat(*chat)
+	return nil
 }
 
 func (s *Server) getChat(w http.ResponseWriter, r *http.Request) error {
@@ -1351,61 +794,6 @@ func (s *Server) deleteChat(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// TODO(parthsareen): consolidate events within the function
-func chatEventFromApiChatResponse(res api.ChatResponse, thinkingTimeStart *time.Time, thinkingTimeEnd *time.Time) responses.ChatEvent {
-	// If there are tool calls, send assistant_with_tools event
-	if len(res.Message.ToolCalls) > 0 {
-		// Convert API tool calls to store tool calls
-		storeToolCalls := make([]store.ToolCall, len(res.Message.ToolCalls))
-		for i, tc := range res.Message.ToolCalls {
-			argsJSON, _ := json.Marshal(tc.Function.Arguments)
-			storeToolCalls[i] = store.ToolCall{
-				Type: "function",
-				Function: store.ToolFunction{
-					Name:      tc.Function.Name,
-					Arguments: string(argsJSON),
-				},
-			}
-		}
-
-		var content *string
-		if res.Message.Content != "" {
-			content = &res.Message.Content
-		}
-		var thinking *string
-		if res.Message.Thinking != "" {
-			thinking = &res.Message.Thinking
-		}
-
-		return responses.ChatEvent{
-			EventName:         "assistant_with_tools",
-			Content:           content,
-			Thinking:          thinking,
-			ToolCalls:         storeToolCalls,
-			ThinkingTimeStart: thinkingTimeStart,
-			ThinkingTimeEnd:   thinkingTimeEnd,
-		}
-	}
-
-	// Otherwise, send regular chat event
-	var content *string
-	if res.Message.Content != "" {
-		content = &res.Message.Content
-	}
-	var thinking *string
-	if res.Message.Thinking != "" {
-		thinking = &res.Message.Thinking
-	}
-
-	return responses.ChatEvent{
-		EventName:         "chat",
-		Content:           content,
-		Thinking:          thinking,
-		ThinkingTimeStart: thinkingTimeStart,
-		ThinkingTimeEnd:   thinkingTimeEnd,
-	}
-}
-
 func chatInfoFromChat(chat store.Chat) responses.ChatInfo {
 	userExcerpt := ""
 	var updatedAt time.Time
@@ -1505,77 +893,16 @@ func (s *Server) getHealth(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (s *Server) getInferenceCompute(w http.ResponseWriter, r *http.Request) error {
-	ctx, cancel := context.WithTimeout(r.Context(), 500*time.Millisecond)
-	defer cancel()
-	info, err := server.GetInferenceInfo(ctx)
-	if err != nil {
-		s.log().Error("failed to get inference info", "error", err)
-		return fmt.Errorf("failed to get inference info: %w", err)
-	}
-
-	inferenceComputes := make([]responses.InferenceCompute, len(info.Computes))
-	for i, ic := range info.Computes {
-		inferenceComputes[i] = responses.InferenceCompute{
-			Library: ic.Library,
-			Variant: ic.Variant,
-			Compute: ic.Compute,
-			Driver:  ic.Driver,
-			Name:    ic.Name,
-			VRAM:    ic.VRAM,
-		}
-	}
-
-	response := responses.InferenceComputeResponse{
-		InferenceComputes:    inferenceComputes,
-		DefaultContextLength: info.DefaultContextLength,
-	}
-
 	w.Header().Set("Content-Type", "application/json")
-	return json.NewEncoder(w).Encode(response)
+	return json.NewEncoder(w).Encode(responses.InferenceComputeResponse{})
 }
 
 func (s *Server) modelUpstream(w http.ResponseWriter, r *http.Request) error {
-	if r.Method != "POST" {
-		return fmt.Errorf("method not allowed")
-	}
-
-	var req struct {
-		Model string `json:"model"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		return fmt.Errorf("invalid request body: %w", err)
-	}
-
-	if req.Model == "" {
-		return fmt.Errorf("model is required")
-	}
-
-	digest, pushTime, err := s.checkModelUpstream(r.Context(), req.Model, 5*time.Second)
-	if err != nil {
-		s.log().Warn("failed to check upstream digest", "error", err, "model", req.Model)
-		response := responses.ModelUpstreamResponse{
-			Error: err.Error(),
-		}
-		w.Header().Set("Content-Type", "application/json")
-		return json.NewEncoder(w).Encode(response)
-	}
-
-	n := model.ParseName(req.Model)
-	stale := true
-	if m, err := manifest.ParseNamedManifest(n); err == nil {
-		if m.Digest() == digest {
-			stale = false
-		} else if pushTime > 0 && m.FileInfo().ModTime().Unix() >= pushTime {
-			stale = false
-		}
-	}
-
-	response := responses.ModelUpstreamResponse{
-		Stale: stale,
-	}
-
 	w.Header().Set("Content-Type", "application/json")
-	return json.NewEncoder(w).Encode(response)
+	return json.NewEncoder(w).Encode(responses.ModelUpstreamResponse{
+		Stale: false,
+		Error: "local model updates are not available in the Windows Copilot desktop app",
+	})
 }
 
 func userAgent() string {

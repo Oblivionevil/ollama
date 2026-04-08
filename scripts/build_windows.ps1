@@ -65,6 +65,13 @@ function checkEnv {
 
     $script:DIST_DIR="${script:SRC_DIR}\dist\windows-${script:TARGET_ARCH}"
     $env:CGO_ENABLED="1"
+	if (-not $env:CC) {
+		if (Get-Command zig -ErrorAction SilentlyContinue) {
+			$env:CC = "zig cc"
+			$env:CXX = "zig c++"
+			Write-Output "Using zig as the C/C++ compiler for CGO"
+		}
+	}
     if (-not $env:CGO_CFLAGS) {
         $env:CGO_CFLAGS = "-O3"
     }
@@ -380,14 +387,9 @@ function stageMsixPackage {
         [string]$MakeAppxTool
     )
 
-    $appBinary = Join-Path $script:SRC_DIR "dist\windows-ollama-app-${Arch}.exe"
-    $runtimeDir = Join-Path $script:SRC_DIR "dist\windows-${Arch}"
-    if (-not (Test-Path $appBinary)) {
-        Write-Output "ERROR: missing app binary ${appBinary}"
-        exit 1
-    }
-    if (-not (Test-Path (Join-Path $runtimeDir "ollama.exe"))) {
-        Write-Output "ERROR: missing CLI binary for ${Arch} at ${runtimeDir}"
+    $packageSource = Join-Path $script:SRC_DIR "dist\windows-${Arch}"
+    if (-not (Test-Path (Join-Path $packageSource "ollama app.exe"))) {
+        Write-Output "ERROR: missing staged desktop app for ${Arch} at ${packageSource}"
         exit 1
     }
 
@@ -398,17 +400,7 @@ function stageMsixPackage {
     Remove-Item -ea 0 -Recurse -Force $packageRoot
     mkdir -Force -path $packageRoot | Out-Null
 
-    Copy-Item -Path $appBinary -Destination (Join-Path $packageRoot "ollama app.exe")
-    Copy-Item -Path (Join-Path $runtimeDir "ollama.exe") -Destination (Join-Path $packageRoot "ollama.exe")
-
-    $rootDlls = Get-ChildItem -Path $runtimeDir -File -Filter *.dll -ErrorAction SilentlyContinue
-    if ($rootDlls) {
-        Copy-Item -Path $rootDlls.FullName -Destination $packageRoot
-    }
-
-    if (Test-Path (Join-Path $runtimeDir "lib")) {
-        Copy-Item -Path (Join-Path $runtimeDir "lib") -Destination (Join-Path $packageRoot "lib") -Recurse
-    }
+    Copy-Item -Path (Join-Path $packageSource '*') -Destination $packageRoot -Recurse
 
     copyVcRuntimeLibraries $Arch $packageRoot
     writeMsixAssets $assetDir
@@ -508,7 +500,7 @@ function appinstaller {
     $packageVersion = msixPackageVersion
     $availableArchs = @()
     foreach ($candidate in @("amd64", "arm64")) {
-        if ((Test-Path (Join-Path $script:SRC_DIR "dist\windows-ollama-app-${candidate}.exe")) -and (Test-Path (Join-Path $script:SRC_DIR "dist\windows-${candidate}\ollama.exe"))) {
+		if (Test-Path (Join-Path $script:SRC_DIR "dist\windows-${candidate}\ollama app.exe")) {
             $availableArchs += $candidate
         }
     }
@@ -788,11 +780,22 @@ function app {
 
     Pop-Location
 
-    Write-Output "Running go generate"
-    & go generate ./...
-    if ($LASTEXITCODE -ne 0) { exit($LASTEXITCODE)}
+    if ($env:OLLAMA_APP_GENERATE -eq "1") {
+        Write-Output "Running go generate for desktop app"
+        & go generate ./app/ui
+        if ($LASTEXITCODE -ne 0) { exit($LASTEXITCODE)}
+    } else {
+        Write-Output "Skipping go generate for the desktop app (set OLLAMA_APP_GENERATE=1 to refresh generated files)"
+    }
 	& go build -trimpath -ldflags "-s -w -H windowsgui -X=github.com/ollama/ollama/app/version.Version=$script:VERSION" -o .\dist\windows-ollama-app-${script:ARCH}.exe ./app/cmd/app/
     if ($LASTEXITCODE -ne 0) { exit($LASTEXITCODE)}
+
+    $packageDir = Join-Path $script:SRC_DIR "dist\windows-${script:ARCH}"
+    Remove-Item -ea 0 -Recurse -Force $packageDir
+    mkdir -Force -path $packageDir | Out-Null
+    Copy-Item -Path ".\dist\windows-ollama-app-${script:ARCH}.exe" -Destination (Join-Path $packageDir "ollama app.exe")
+    Copy-Item -Path ".\app\assets\app.ico" -Destination (Join-Path $packageDir "app.ico")
+    copyVcRuntimeLibraries $script:ARCH $packageDir
 }
 
 function deps {
@@ -934,23 +937,18 @@ function clean {
 checkEnv
 try {
     if ($($args.count) -eq 0) {
-        cpu
-        cuda12
-        cuda13
-        rocm6
-        vulkan
-        mlxCuda13
-        ollama
         app
-        deps
         sign
-        installer
+        if ($null -ne ${script:INNO_SETUP_DIR}) {
+            installer
+        } else {
+            Write-Output "Skipping Inno Setup packaging because Inno Setup is not installed"
+        }
         if (signingEnabled) {
             appinstaller
         } else {
             Write-Output "Skipping App Installer packaging because code signing is not enabled"
         }
-        zip
     } else {
         for ( $i = 0; $i -lt $args.count; $i++ ) {
             Write-Output "running build step $($args[$i])"

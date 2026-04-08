@@ -88,26 +88,15 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 DialogFontSize=12
 
 [Files]
-#if FileExists("..\dist\windows-ollama-app-amd64.exe")
-Source: "..\dist\windows-ollama-app-amd64.exe"; DestDir: "{app}"; DestName: "{#MyAppExeName}" ;Check: not IsArm64();  Flags: ignoreversion 64bit; BeforeInstall: TaskKill('{#MyAppExeName}')
-Source: "..\dist\windows-amd64\vc_redist.x64.exe"; DestDir: "{tmp}"; Check: not IsArm64() and vc_redist_needed(); Flags: deleteafterinstall
-Source: "..\dist\windows-amd64\ollama.exe"; DestDir: "{app}"; Check: not IsArm64(); Flags: ignoreversion 64bit; BeforeInstall: TaskKill('ollama.exe')
-Source: "..\dist\windows-amd64\lib\ollama\*"; DestDir: "{app}\lib\ollama\"; Check: not IsArm64(); Flags: ignoreversion 64bit recursesubdirs
+#if DirExists("..\dist\windows-amd64")
+Source: "..\dist\windows-amd64\*"; DestDir: "{app}"; Check: not IsArm64(); Flags: ignoreversion 64bit recursesubdirs createallsubdirs; BeforeInstall: TaskKill('{#MyAppExeName}')
 #endif
 
-; For local development, rely on binary compatibility at runtime since we can't cross compile
-#if FileExists("..\dist\windows-ollama-app-arm64.exe")
-Source: "..\dist\windows-ollama-app-arm64.exe"; DestDir: "{app}"; DestName: "{#MyAppExeName}" ;Check: IsArm64();  Flags: ignoreversion 64bit; BeforeInstall: TaskKill('{#MyAppExeName}')
+#if DirExists("..\dist\windows-arm64")
+Source: "..\dist\windows-arm64\*"; DestDir: "{app}"; Check: IsArm64(); Flags: ignoreversion 64bit recursesubdirs createallsubdirs; BeforeInstall: TaskKill('{#MyAppExeName}')
 #else 
-Source: "..\dist\windows-ollama-app-amd64.exe"; DestDir: "{app}"; DestName: "{#MyAppExeName}" ;Check: IsArm64();  Flags: ignoreversion 64bit; BeforeInstall: TaskKill('{#MyAppExeName}')
+Source: "..\dist\windows-amd64\*"; DestDir: "{app}"; Check: IsArm64(); Flags: ignoreversion 64bit recursesubdirs createallsubdirs; BeforeInstall: TaskKill('{#MyAppExeName}')
 #endif
-
-#if FileExists("..\dist\windows-arm64\ollama.exe")
-Source: "..\dist\windows-arm64\vc_redist.arm64.exe"; DestDir: "{tmp}"; Check: IsArm64() and vc_redist_needed(); Flags: deleteafterinstall
-Source: "..\dist\windows-arm64\ollama.exe"; DestDir: "{app}"; Check: IsArm64(); Flags: ignoreversion 64bit; BeforeInstall: TaskKill('ollama.exe')
-#endif
-
-Source: ".\assets\app.ico"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\app.ico"
@@ -118,38 +107,26 @@ Name: "{userprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFile
 Type: files; Name: "{%LOCALAPPDATA}\Ollama\updates"
 
 [Run]
-#if DirExists("..\dist\windows-arm64")
-Filename: "{tmp}\vc_redist.arm64.exe"; Parameters: "/install /passive /norestart"; Check: IsArm64() and vc_redist_needed(); StatusMsg: "Installing VC++ Redistributables..."; Flags: waituntilterminated
-#endif
-#if DirExists("..\dist\windows-amd64")
-Filename: "{tmp}\vc_redist.x64.exe"; Parameters: "/install /passive /norestart"; Check: not IsArm64() and vc_redist_needed(); StatusMsg: "Installing VC++ Redistributables..."; Flags: waituntilterminated
-#endif
 Filename: "{cmd}"; Parameters: "/C set PATH={app};%PATH% & ""{app}\{#MyAppExeName}"""; Flags: postinstall nowait runhidden
 
 [UninstallRun]
 ; Filename: "{cmd}"; Parameters: "/C ""taskkill /im ''{#MyAppExeName}'' /f /t"; Flags: runhidden
-; Filename: "{cmd}"; Parameters: "/C ""taskkill /im ollama.exe /f /t"; Flags: runhidden
 Filename: "taskkill"; Parameters: "/im ""{#MyAppExeName}"" /f /t"; Flags: runhidden
-Filename: "taskkill"; Parameters: "/im ""ollama.exe"" /f /t"; Flags: runhidden
-; HACK!  need to give the server and app enough time to exit
-; TODO - convert this to a Pascal code script so it waits until they're no longer running, then completes
-Filename: "{cmd}"; Parameters: "/c timeout 5"; Flags: runhidden
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{%TEMP}\ollama*"
 Type: filesandordirs; Name: "{%LOCALAPPDATA}\Ollama"
 Type: filesandordirs; Name: "{%LOCALAPPDATA}\Programs\Ollama"
-Type: filesandordirs; Name: "{%USERPROFILE}\.ollama\history"
 Type: filesandordirs; Name: "{userstartup}\{#MyAppName}.lnk"
-; NOTE: if the user has a custom OLLAMA_MODELS it will be preserved
 
 [InstallDelete]
 Type: filesandordirs; Name: "{%TEMP}\ollama*"
+Type: files; Name: "{app}\ollama.exe"
 Type: filesandordirs; Name: "{app}\lib\ollama"
 
 [Messages]
 WizardReady=Ollama
-ReadyLabel1=%nLet's get you up and running with your own large language models.
+ReadyLabel1=%nLet's get you up and running with the GitHub Copilot desktop app.
 SetupAppRunningError=Another Ollama installer is running.%n%nPlease cancel or finish the other installer, then click OK to continue with this install, or Cancel to exit.
 
 
@@ -158,9 +135,6 @@ SetupAppRunningError=Another Ollama installer is running.%n%nPlease cancel or fi
 ;ClickFinish=%n
 
 [Registry]
-Root: HKCU; Subkey: "Environment"; \
-    ValueType: expandsz; ValueName: "Path"; ValueData: "{olddata};{app}"; \
-    Check: NeedsAddPath('{app}')
 ; Register ollama:// URL protocol
 Root: HKCU; Subkey: "Software\Classes\ollama"; ValueType: string; ValueName: ""; ValueData: "URL:Ollama Protocol"; Flags: uninsdeletekey
 Root: HKCU; Subkey: "Software\Classes\ollama"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""; Flags: uninsdeletekey

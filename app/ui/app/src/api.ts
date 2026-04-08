@@ -4,7 +4,6 @@ import {
   ChatEvent,
   DownloadEvent,
   ErrorEvent,
-  InferenceComputeResponse,
   ModelCapabilitiesResponse,
   Model,
   ChatRequest,
@@ -61,11 +60,6 @@ Model.prototype.isCloud = function (): boolean {
   return this.isRemote();
 };
 
-export type CloudStatusSource = "env" | "config" | "both" | "none";
-export interface CloudStatusResponse {
-  disabled: boolean;
-  source: CloudStatusSource;
-}
 // Helper function to convert Uint8Array to base64
 function uint8ArrayToBase64(uint8Array: Uint8Array): string {
   const chunkSize = 0x8000; // 32KB chunks to avoid stack overflow
@@ -333,28 +327,6 @@ export async function updateSettings(settings: Settings): Promise<{
   };
 }
 
-export async function updateCloudSetting(
-  enabled: boolean,
-): Promise<CloudStatusResponse> {
-  const response = await fetch(`${API_BASE}/api/v1/cloud`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ enabled }),
-  });
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(error || "Failed to update cloud setting");
-  }
-
-  const data = await response.json();
-  return {
-    disabled: Boolean(data.disabled),
-    source: (data.source as CloudStatusSource) || "none",
-  };
-}
-
 export async function renameChat(chatId: string, title: string): Promise<void> {
   const response = await fetch(`${API_BASE}/api/v1/chat/${chatId}/rename`, {
     method: "PUT",
@@ -379,88 +351,6 @@ export async function deleteChat(chatId: string): Promise<void> {
   }
 }
 
-// Get upstream information for model staleness checking
-export async function getModelUpstreamInfo(
-  model: Model,
-): Promise<{ stale: boolean; exists: boolean; error?: string }> {
-  try {
-    const response = await fetch(`${API_BASE}/api/v1/model/upstream`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: model.model,
-      }),
-    });
-
-    if (!response.ok) {
-      console.warn(
-        `Failed to check upstream for ${model.model}: ${response.status}`,
-      );
-      return { stale: false, exists: false };
-    }
-
-    const data = await response.json();
-
-    if (data.error) {
-      console.warn(`Upstream check: ${data.error}`);
-      return { stale: false, exists: false, error: data.error };
-    }
-
-    return { stale: !!data.stale, exists: true };
-  } catch (error) {
-    console.warn(`Error checking model staleness:`, error);
-    return { stale: false, exists: false };
-  }
-}
-
-export async function* pullModel(
-  modelName: string,
-  signal?: AbortSignal,
-): AsyncGenerator<{
-  status: string;
-  digest?: string;
-  total?: number;
-  completed?: number;
-  done?: boolean;
-}> {
-  const response = await fetch(`${API_BASE}/api/v1/models/pull`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ name: modelName }),
-    signal,
-  });
-
-  if (!response.ok) {
-    throw new Error(`Failed to pull model: ${response.statusText}`);
-  }
-
-  for await (const event of parseJsonlFromResponse<{
-    status: string;
-    digest?: string;
-    total?: number;
-    completed?: number;
-    done?: boolean;
-  }>(response)) {
-    yield event;
-  }
-}
-
-export async function getInferenceCompute(): Promise<InferenceComputeResponse> {
-  const response = await fetch(`${API_BASE}/api/v1/inference-compute`);
-  if (!response.ok) {
-    throw new Error(
-      `Failed to fetch inference compute: ${response.statusText}`,
-    );
-  }
-
-  const data = await response.json();
-  return new InferenceComputeResponse(data);
-}
-
 export async function fetchHealth(): Promise<boolean> {
   try {
     const response = await fetch(`${API_BASE}/api/v1/health`, {
@@ -479,17 +369,4 @@ export async function fetchHealth(): Promise<boolean> {
     console.error("Error checking health:", error);
     return false;
   }
-}
-
-export async function getCloudStatus(): Promise<CloudStatusResponse | null> {
-  const response = await fetch(`${API_BASE}/api/v1/cloud`);
-  if (!response.ok) {
-    throw new Error(`Failed to fetch cloud status: ${response.status}`);
-  }
-
-  const data = await response.json();
-  return {
-    disabled: Boolean(data.disabled),
-    source: (data.source as CloudStatusSource) || "none",
-  };
 }
