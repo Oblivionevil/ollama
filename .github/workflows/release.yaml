@@ -5,6 +5,11 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build and publish
+        required: true
+        type: string
 
 env:
   CGO_CFLAGS: '-O3'
@@ -17,14 +22,19 @@ jobs:
     outputs:
       GOFLAGS: ${{ steps.goflags.outputs.GOFLAGS }}
       VERSION: ${{ steps.goflags.outputs.VERSION }}
+      RELEASE_TAG: ${{ steps.goflags.outputs.RELEASE_TAG }}
       vendorsha: ${{ steps.goflags.outputs.vendorsha }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}
       - name: Set environment
         id: goflags
         run: |
-          echo GOFLAGS="'-ldflags=-w -s \"-X=github.com/ollama/ollama/version.Version=${GITHUB_REF_NAME#v}\" \"-X=github.com/ollama/ollama/server.mode=release\"'" | tee -a $GITHUB_OUTPUT
-          echo VERSION="${GITHUB_REF_NAME#v}" | tee -a $GITHUB_OUTPUT
+          RELEASE_TAG="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref_name }}"
+          echo RELEASE_TAG="${RELEASE_TAG}" | tee -a $GITHUB_OUTPUT
+          echo GOFLAGS="'-ldflags=-w -s \"-X=github.com/ollama/ollama/version.Version=${RELEASE_TAG#v}\" \"-X=github.com/ollama/ollama/server.mode=release\"'" | tee -a $GITHUB_OUTPUT
+          echo VERSION="${RELEASE_TAG#v}" | tee -a $GITHUB_OUTPUT
           echo vendorsha=$(make -f Makefile.sync print-base) | tee -a $GITHUB_OUTPUT
 
   darwin-build:
@@ -45,6 +55,8 @@ jobs:
       CGO_LDFLAGS: '-mmacosx-version-min=14.0 -O3'
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.setup-environment.outputs.RELEASE_TAG }}
       - run: |
           echo $MACOS_SIGNING_KEY | base64 --decode > certificate.p12
           security create-keychain -p password build.keychain
@@ -139,6 +151,7 @@ jobs:
             flags: ''
     runs-on: ${{ matrix.arch == 'arm64' && format('{0}-{1}', matrix.os, matrix.arch) || matrix.os }}
     environment: release
+    needs: setup-environment
     env:
       GOFLAGS: ${{ needs.setup-environment.outputs.GOFLAGS }}
     steps:
@@ -229,6 +242,8 @@ jobs:
             C:\Program Files\NVIDIA\CUDNN
           key: ${{ matrix.install }}-${{ matrix.cudnn-install }}
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.setup-environment.outputs.RELEASE_TAG }}
       - uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}\.ccache
@@ -328,13 +343,15 @@ jobs:
   windows-app:
     runs-on: windows
     environment: release
-    needs: [windows-build, windows-depends]
+    needs: [setup-environment, windows-build, windows-depends]
     env:
       GOFLAGS: ${{ needs.setup-environment.outputs.GOFLAGS }}
       VERSION: ${{ needs.setup-environment.outputs.VERSION }}
       KEY_CONTAINER: ${{ vars.KEY_CONTAINER }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.setup-environment.outputs.RELEASE_TAG }}
       - uses: google-github-actions/auth@v2
         with:
           project_id: ollama
@@ -404,6 +421,8 @@ jobs:
       GOFLAGS: ${{ needs.setup-environment.outputs.GOFLAGS }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.setup-environment.outputs.RELEASE_TAG }}
       - uses: docker/setup-buildx-action@v3
       - uses: docker/build-push-action@v6
         with:
@@ -453,6 +472,7 @@ jobs:
 
   # Build each Docker variant (OS, arch, and flavor) separately. Using QEMU is unreliable and slower.
   docker-build-push:
+    if: github.event_name != 'workflow_dispatch'
     strategy:
       matrix:
         include:
@@ -483,6 +503,8 @@ jobs:
       GOFLAGS: ${{ needs.setup-environment.outputs.GOFLAGS }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.setup-environment.outputs.RELEASE_TAG }}
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
@@ -509,6 +531,7 @@ jobs:
 
   # Merge Docker images for the same flavor into a single multi-arch manifest
   docker-merge-push:
+    if: github.event_name != 'workflow_dispatch'
     strategy:
       matrix:
         suffix: ['', '-rocm']
@@ -545,13 +568,15 @@ jobs:
   release:
     runs-on: ubuntu-latest
     environment: release
-    needs: [darwin-build, windows-app, linux-build]
+    needs: [setup-environment, darwin-build, windows-app, linux-build]
     permissions:
       contents: write
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.setup-environment.outputs.RELEASE_TAG }}
       - uses: actions/download-artifact@v4
         with:
           pattern: bundles-*
@@ -568,15 +593,16 @@ jobs:
         working-directory: dist
       - name: Create or update Release for tag
         run: |
-          RELEASE_VERSION="$(echo ${GITHUB_REF_NAME} | cut -f1 -d-)"
+          RELEASE_TAG="${{ needs.setup-environment.outputs.RELEASE_TAG }}"
+          RELEASE_VERSION="$(echo ${RELEASE_TAG} | cut -f1 -d-)"
           echo "Looking for existing release for ${RELEASE_VERSION}"
           OLD_TAG=$(gh release ls --json name,tagName | jq -r ".[] | select(.name == \"${RELEASE_VERSION}\") | .tagName")
           if [ -n "$OLD_TAG" ]; then
-            echo "Updating release ${RELEASE_VERSION} to point to new tag ${GITHUB_REF_NAME}"
-            gh release edit ${OLD_TAG} --tag ${GITHUB_REF_NAME}
+            echo "Updating release ${RELEASE_VERSION} to point to new tag ${RELEASE_TAG}"
+            gh release edit ${OLD_TAG} --tag ${RELEASE_TAG}
           else
-            echo "Creating new release ${RELEASE_VERSION} pointing to tag ${GITHUB_REF_NAME}"
-            gh release create ${GITHUB_REF_NAME} \
+            echo "Creating new release ${RELEASE_VERSION} pointing to tag ${RELEASE_TAG}"
+            gh release create ${RELEASE_TAG} \
               --title ${RELEASE_VERSION} \
               --draft \
               --generate-notes \
@@ -584,10 +610,11 @@ jobs:
           fi
       - name: Upload release artifacts
         run: |
+          RELEASE_TAG="${{ needs.setup-environment.outputs.RELEASE_TAG }}"
           pids=()
           for payload in dist/*.txt dist/*.zip dist/*.tgz dist/*.tar.zst dist/*.exe dist/*.dmg dist/*.ps1 dist/*.sh dist/*.msix dist/*.msixbundle dist/*.appinstaller ; do
             echo "Uploading $payload"
-            gh release upload ${GITHUB_REF_NAME} $payload --clobber &
+            gh release upload ${RELEASE_TAG} $payload --clobber &
             pids+=($!)
             sleep 1
           done
