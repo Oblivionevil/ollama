@@ -1,22 +1,19 @@
 import { forwardRef, useState, useRef, useEffect } from "react";
 import type { ThinkingLevel } from "./ChatForm";
 
-const THINKING_LEVELS = {
-  LOW: "low",
-  MEDIUM: "medium",
-  HIGH: "high",
-} as const;
-
-const THINKING_LEVEL_LABELS = {
-  low: "Low",
-  medium: "Medium",
-  high: "High",
-} as const;
+function formatThinkingLevel(level: ThinkingLevel): string {
+  return level
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join(" ");
+}
 
 interface ThinkButtonProps {
   mode: "think" | "thinkingLevel";
   isVisible?: boolean;
   isActive?: boolean;
+  availableLevels?: ThinkingLevel[];
   currentLevel?: ThinkingLevel;
   onToggle?: () => void;
   onLevelChange?: (level: ThinkingLevel) => void;
@@ -29,6 +26,7 @@ export const ThinkButton = forwardRef<HTMLButtonElement, ThinkButtonProps>(
       mode,
       isVisible,
       isActive,
+      availableLevels,
       currentLevel,
       onToggle,
       onLevelChange,
@@ -93,10 +91,7 @@ export const ThinkButton = forwardRef<HTMLButtonElement, ThinkButtonProps>(
       );
     }
 
-    // thinkingLevel mode
-    const displayLabel = currentLevel
-      ? THINKING_LEVEL_LABELS[currentLevel]
-      : "";
+    const displayLabel = currentLevel ? formatThinkingLevel(currentLevel) : "";
     return (
       <div className="relative" ref={dropdownRef}>
         <button
@@ -121,7 +116,7 @@ export const ThinkButton = forwardRef<HTMLButtonElement, ThinkButtonProps>(
             <span className="text-sm">{displayLabel}</span>
           </div>
           <svg
-            className={`w-3 h-3`}
+            className="w-3 h-3"
             fill="none"
             stroke="currentColor"
             viewBox="0 0 24 24"
@@ -137,7 +132,7 @@ export const ThinkButton = forwardRef<HTMLButtonElement, ThinkButtonProps>(
 
         {isDropdownOpen && (
           <div className="absolute bottom-full mb-2 text-[15px] rounded-2xl overflow-hidden bg-white border border-neutral-100 text-neutral-800 shadow-xl shadow-black/5 backdrop-blur-lg dark:border-neutral-600/40 dark:bg-neutral-800 dark:text-white dark:ring-black/20 min-w-[120px]">
-            {Object.entries(THINKING_LEVELS).map(([, level]) => (
+            {(availableLevels || []).map((level) => (
               <button
                 key={level}
                 className={`w-full text-left px-3 py-2 cursor-pointer hover:bg-neutral-100 dark:hover:bg-neutral-700 transition-colors text-neutral-700 dark:text-neutral-300 ${
@@ -150,7 +145,7 @@ export const ThinkButton = forwardRef<HTMLButtonElement, ThinkButtonProps>(
                   setIsDropdownOpen(false);
                 }}
               >
-                {THINKING_LEVEL_LABELS[level]}
+                {formatThinkingLevel(level)}
               </button>
             ))}
           </div>

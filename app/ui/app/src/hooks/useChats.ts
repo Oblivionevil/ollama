@@ -7,7 +7,6 @@ import { createQueryBatcher } from "./useQueryBatcher";
 import { useRefetchModels } from "./useModels";
 import { useStreamingContext } from "@/contexts/StreamingContext";
 import { getModelCapabilities } from "@/api";
-import { useCloudStatus } from "./useCloudStatus";
 
 export const useChats = () => {
   return useQuery({
@@ -116,9 +115,8 @@ export const useIsModelStale = (modelName: string) => {
 export const useShouldShowStaleDisplay = (model: Model | null) => {
   const isStale = useIsModelStale(model?.model || "");
   const { data: dismissedModels } = useDismissedStaleModels();
-  const { cloudDisabled } = useCloudStatus();
 
-  if (model?.isCloud() && !cloudDisabled) {
+  if (model?.isCloud()) {
     return false;
   }
 

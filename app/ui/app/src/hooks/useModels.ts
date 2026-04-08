@@ -3,10 +3,8 @@ import { Model } from "@/gotypes";
 import { getModels } from "@/api";
 import { mergeModels } from "@/utils/mergeModels";
 import { useMemo } from "react";
-import { useCloudStatus } from "./useCloudStatus";
 
 export function useModels(searchQuery = "") {
-  const { cloudDisabled } = useCloudStatus();
   const localQuery = useQuery<Model[], Error>({
     queryKey: ["models", searchQuery],
     queryFn: () => getModels(searchQuery),
@@ -20,7 +18,7 @@ export function useModels(searchQuery = "") {
   });
 
   const allModels = useMemo(() => {
-    const models = mergeModels(localQuery.data || [], cloudDisabled);
+  const models = mergeModels(localQuery.data || []);
 
     if (searchQuery && searchQuery.trim()) {
       const query = searchQuery.toLowerCase().trim();
@@ -40,7 +38,7 @@ export function useModels(searchQuery = "") {
     }
 
     return models;
-  }, [localQuery.data, searchQuery, cloudDisabled]);
+  }, [localQuery.data, searchQuery]);
 
   return {
     ...localQuery,

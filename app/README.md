@@ -70,6 +70,24 @@ The `-dev` flag enables:
 .\scripts\build_windows.ps1
 ```
 
+**Build signed MSIX/App Installer packages**
+
+This reuses the existing Windows code-signing flow and emits signed `.msix` packages, an `.msixbundle` when both architectures are available, and an `.appinstaller` manifest for release publishing.
+
+Requirements:
+
+- Windows SDK with `MakeAppx.exe`
+- code signing configured via `KEY_CONTAINER` and `ollama_inc.crt`
+- `APPINSTALLER_BASE_URI` set for local builds if you want the `.appinstaller` file to point at your hosted artifacts
+
+```powershell
+$env:KEY_CONTAINER="your-signing-key-container"
+$env:APPINSTALLER_BASE_URI="https://example.com/downloads/ollama"
+.\scripts\build_windows.ps1 deps sign installer appinstaller zip
+```
+
+The MSIX/App Installer path is per-user like the existing desktop installer, but unlike the Inno Setup installer it does not add `ollama.exe` to the user `PATH`.
+
 ### macOS
 
 CI builds with Xcode 14.1 for OS compatibility prior to v13.  If you want to manually build v11+ support, you can download the older Xcode [here](https://developer.apple.com/services-account/download?path=/Developer_Tools/Xcode_14.1/Xcode_14.1.xip), extract, then `mv ./Xcode.app /Applications/Xcode_14.1.0.app` then activate with:

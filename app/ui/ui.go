@@ -30,7 +30,6 @@ import (
 	"github.com/ollama/ollama/app/ui/responses"
 	"github.com/ollama/ollama/app/updater"
 	"github.com/ollama/ollama/app/version"
-	ollamaAuth "github.com/ollama/ollama/auth"
 	"github.com/ollama/ollama/envconfig"
 	"github.com/ollama/ollama/manifest"
 	"github.com/ollama/ollama/types/model"
@@ -112,6 +111,12 @@ type Server struct {
 	// Updater for checking and downloading updates
 	Updater             *updater.Updater
 	UpdateAvailableFunc func()
+
+	copilotStateMu        sync.Mutex
+	copilotSessionIDValue string
+	copilotFlows          map[string]*copilotDeviceFlow
+	copilotModelCache     []copilotModelMetadata
+	copilotModelCacheAt   time.Time
 }
 
 func (s *Server) log() *slog.Logger {
@@ -286,22 +291,27 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("POST /api/v1/create-chat", handle(s.createChat))
 	mux.Handle("PUT /api/v1/chat/{id}/rename", handle(s.renameChat))
 
+	mux.Handle("GET /api/v1/health", handle(s.getHealth))
 	mux.Handle("GET /api/v1/inference-compute", handle(s.getInferenceCompute))
 	mux.Handle("POST /api/v1/model/upstream", handle(s.modelUpstream))
 	mux.Handle("GET /api/v1/settings", handle(s.getSettings))
 	mux.Handle("POST /api/v1/settings", handle(s.settings))
-	mux.Handle("GET /api/v1/cloud", handle(s.getCloudSetting))
-	mux.Handle("POST /api/v1/cloud", handle(s.cloudSetting))
 
 	// Ollama proxy endpoints
 	ollamaProxy := s.ollamaProxy()
-	mux.Handle("GET /api/tags", ollamaProxy)
-	mux.Handle("POST /api/show", ollamaProxy)
+	mux.Handle("GET /api/tags", handle(s.copilotTagsHandler))
+	mux.Handle("POST /api/show", handle(s.copilotShowHandler))
 	mux.Handle("GET /api/version", ollamaProxy)
 	mux.Handle("GET /api/status", ollamaProxy)
 	mux.Handle("HEAD /api/version", ollamaProxy)
-	mux.Handle("POST /api/me", ollamaProxy)
-	mux.Handle("POST /api/signout", ollamaProxy)
+	mux.Handle("POST /api/me", handle(s.copilotUserHandler))
+	mux.Handle("POST /api/signout", handle(s.copilotSignOutHandler))
+	mux.HandleFunc("GET /auth/github", s.copilotAuthPageHandler)
+	mux.Handle("GET /auth/github/status", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := s.copilotAuthStatusHandler(w, r); err != nil {
+			s.handleError(w, err)
+		}
+	}))
 
 	// React app - catch all non-API routes and serve the React app
 	mux.Handle("GET /", s.appHandler())
@@ -345,6 +355,12 @@ func (s *Server) httpClient() *http.Client {
 	return userAgentHTTPClient(10 * time.Second)
 }
 
+// copilotChatHTTPClient disables the client-level timeout so streaming Copilot
+// responses with larger prompts or attachments are not truncated prematurely.
+func (s *Server) copilotChatHTTPClient() *http.Client {
+	return userAgentHTTPClient(0)
+}
+
 // inferenceClient uses almost the same HTTP client, but without a timeout so
 // long requests aren't truncated
 func (s *Server) inferenceClient() *api.Client {
@@ -360,55 +376,32 @@ func userAgentHTTPClient(timeout time.Duration) *http.Client {
 	}
 }
 
-// doSelfSigned sends a self-signed request to the ollama.com API
-func (s *Server) doSelfSigned(ctx context.Context, method, path string) (*http.Response, error) {
-	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
-	// Form the string to sign: METHOD,PATH?ts=TIMESTAMP
-	signString := fmt.Sprintf("%s,%s?ts=%s", method, path, timestamp)
-	signature, err := ollamaAuth.Sign(ctx, []byte(signString))
-	if err != nil {
-		return nil, fmt.Errorf("failed to sign request: %w", err)
-	}
-
-	endpoint := fmt.Sprintf("%s%s?ts=%s", OllamaDotCom, path, timestamp)
-	req, err := http.NewRequestWithContext(ctx, method, endpoint, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", signature))
-
-	return s.httpClient().Do(req)
-}
-
-// UserData fetches user data from ollama.com API for the current ollama key
+// UserData fetches user data for the current desktop provider session.
 func (s *Server) UserData(ctx context.Context) (*api.UserResponse, error) {
-	resp, err := s.doSelfSigned(ctx, http.MethodPost, "/api/me")
+	session, err := s.Store.AuthSession()
 	if err != nil {
-		return nil, fmt.Errorf("failed to call ollama.com/api/me: %w", err)
+		return nil, err
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	if session == nil || session.AccessToken == "" {
+		return nil, nil
 	}
 
-	var user api.UserResponse
-	if err := json.NewDecoder(resp.Body).Decode(&user); err != nil {
-		return nil, fmt.Errorf("failed to parse user response: %w", err)
+	current, err := s.copilotAuthorizedSession(ctx)
+	if err != nil {
+		var authErr api.AuthorizationError
+		if errors.As(err, &authErr) {
+			return nil, nil
+		}
+		return nil, err
 	}
 
-	user.AvatarURL = fmt.Sprintf("%s/%s", OllamaDotCom, user.AvatarURL)
-
-	storeUser := store.User{
-		Name:  user.Name,
-		Email: user.Email,
-		Plan:  user.Plan,
-	}
-	if err := s.Store.SetUser(storeUser); err != nil {
-		s.log().Warn("failed to cache user data", "error", err)
-	}
-
-	return &user, nil
+	return &api.UserResponse{
+		ID:        uuid.Nil,
+		Email:     current.Email,
+		Name:      current.Name,
+		AvatarURL: current.AvatarURL,
+		Plan:      current.Plan,
+	}, nil
 }
 
 // WaitForServer waits for the Ollama server to be ready
@@ -723,6 +716,21 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) error {
 		if err := s.Store.SetChat(*chat); err != nil {
 			return err
 		}
+	}
+
+	remoteModel, err := s.copilotFindModel(r.Context(), req.Model)
+	if err != nil {
+		var authErr api.AuthorizationError
+		if errors.As(err, &authErr) {
+			errorEvent := s.getError(err)
+			json.NewEncoder(w).Encode(errorEvent)
+			flusher.Flush()
+			return nil
+		}
+		s.log().Warn("failed to resolve remote model, falling back to local path", "model", req.Model, "error", err)
+	}
+	if remoteModel != nil {
+		return s.chatCopilot(r.Context(), w, flusher, chat, req, remoteModel)
 	}
 
 	ctx, cancel := context.WithCancel(r.Context())
@@ -1489,37 +1497,10 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) error {
 	})
 }
 
-func (s *Server) cloudSetting(w http.ResponseWriter, r *http.Request) error {
-	var req struct {
-		Enabled bool `json:"enabled"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		return fmt.Errorf("invalid request body: %w", err)
-	}
-
-	if err := s.Store.SetCloudEnabled(req.Enabled); err != nil {
-		return fmt.Errorf("failed to persist cloud setting: %w", err)
-	}
-
-	s.Restart()
-
-	return s.writeCloudStatus(w)
-}
-
-func (s *Server) getCloudSetting(w http.ResponseWriter, r *http.Request) error {
-	return s.writeCloudStatus(w)
-}
-
-func (s *Server) writeCloudStatus(w http.ResponseWriter) error {
-	disabled, source, err := s.Store.CloudStatus()
-	if err != nil {
-		return fmt.Errorf("failed to load cloud status: %w", err)
-	}
-
+func (s *Server) getHealth(w http.ResponseWriter, r *http.Request) error {
 	w.Header().Set("Content-Type", "application/json")
 	return json.NewEncoder(w).Encode(map[string]any{
-		"disabled": disabled,
-		"source":   source,
+		"ok": true,
 	})
 }
 

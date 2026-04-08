@@ -11,6 +11,11 @@ $ErrorActionPreference = "Continue"
 
 mkdir -Force -path .\dist | Out-Null
 
+$script:MSIX_PACKAGE_NAME = "Ollama.Ollama"
+$script:MSIX_DISPLAY_NAME = "Ollama"
+$script:MSIX_DESCRIPTION = "Ollama desktop app"
+$script:MSIX_BACKGROUND = "#111827"
+
 function checkEnv {
     if ($null -ne $env:ARCH ) {
         $script:ARCH = $env:ARCH
@@ -117,6 +122,418 @@ function checkEnv {
         }
     }
     Write-Output "Build parallelism: $script:JOBS (set OLLAMA_BUILD_PARALLEL to override)"
+}
+
+function signingEnabled {
+    return ("${env:KEY_CONTAINER}" -and "${script:OLLAMA_CERT}")
+}
+
+function requireCodeSigning {
+    param(
+        [string]$artifactName
+    )
+
+    if (-not (signingEnabled)) {
+        Write-Output "ERROR: ${artifactName} requires code signing. Set KEY_CONTAINER and place ollama_inc.crt at the repository root."
+        exit 1
+    }
+}
+
+function invokeSignTool {
+    param(
+        [string[]]$Paths
+    )
+
+    $targets = @($Paths | Where-Object { $_ })
+    if ($targets.Count -eq 0) {
+        return
+    }
+
+    & "${script:SignTool}" sign /v /fd sha256 /t http://timestamp.digicert.com /f "${script:OLLAMA_CERT}" `
+        /csp "Google Cloud KMS Provider" /kc ${env:KEY_CONTAINER} `
+        $targets
+    if ($LASTEXITCODE -ne 0) { exit($LASTEXITCODE)}
+}
+
+function invokeMsixSignTool {
+    param(
+        [string[]]$Paths
+    )
+
+    $targets = @($Paths | Where-Object { $_ })
+    if ($targets.Count -eq 0) {
+        return
+    }
+
+    & "${script:SignTool}" sign /v /fd sha256 /td sha256 /tr http://timestamp.digicert.com /f "${script:OLLAMA_CERT}" `
+        /csp "Google Cloud KMS Provider" /kc ${env:KEY_CONTAINER} `
+        $targets
+    if ($LASTEXITCODE -ne 0) { exit($LASTEXITCODE)}
+}
+
+function findWindowsSdkTool {
+    param(
+        [string]$ToolName
+    )
+
+    $patterns = @(
+        "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\${ToolName}",
+        "C:\Program Files (x86)\Windows Kits\8.1\bin\x64\${ToolName}"
+    )
+
+    foreach ($pattern in $patterns) {
+        $match = Get-ChildItem -Path $pattern -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -First 1
+        if ($match) {
+            return $match.FullName
+        }
+    }
+
+    return $null
+}
+
+function msixPackageVersion {
+    if ($env:APPX_PACKAGE_VERSION) {
+        return $env:APPX_PACKAGE_VERSION
+    }
+
+    $parts = @($script:PKG_VERSION.Split('.'))
+    while ($parts.Count -lt 4) {
+        $parts += "0"
+    }
+    if ($parts.Count -gt 4) {
+        $parts = $parts[0..3]
+    }
+
+    return ($parts -join '.')
+}
+
+function msixProcessorArchitecture {
+    param(
+        [string]$Arch
+    )
+
+    switch ($Arch) {
+        "amd64" { return "x64" }
+        "arm64" { return "arm64" }
+        default {
+            Write-Output "ERROR: unsupported MSIX architecture ${Arch}"
+            exit 1
+        }
+    }
+}
+
+function msixPublisher {
+    if ($env:APPX_PUBLISHER) {
+        return $env:APPX_PUBLISHER
+    }
+
+    if ($script:OLLAMA_CERT -and (Test-Path $script:OLLAMA_CERT)) {
+        return ([System.Security.Cryptography.X509Certificates.X509Certificate2]::CreateFromCertFile($script:OLLAMA_CERT)).Subject
+    }
+
+    Write-Output "ERROR: unable to determine MSIX publisher. Set APPX_PUBLISHER or enable code signing."
+    exit 1
+}
+
+function xmlEscape {
+    param(
+        [string]$Value
+    )
+
+    return [System.Security.SecurityElement]::Escape($Value)
+}
+
+function appInstallerBaseUri {
+    if ($env:APPINSTALLER_BASE_URI) {
+        return $env:APPINSTALLER_BASE_URI.TrimEnd('/')
+    }
+
+    if ($env:GITHUB_REPOSITORY -and $script:VERSION) {
+        return "https://github.com/$($env:GITHUB_REPOSITORY)/releases/download/v$($script:VERSION)"
+    }
+
+    return $null
+}
+
+function saveMsixPng {
+    param(
+        [System.Drawing.Image]$Image,
+        [int]$Width,
+        [int]$Height,
+        [string]$Destination,
+        [double]$PaddingFactor = 0.78
+    )
+
+    $bitmap = New-Object System.Drawing.Bitmap $Width, $Height
+    try {
+        $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+        try {
+            $graphics.Clear([System.Drawing.ColorTranslator]::FromHtml($script:MSIX_BACKGROUND))
+            $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
+            $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+            $graphics.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+
+            $scale = [Math]::Min(([double]$Width / [double]$Image.Width), ([double]$Height / [double]$Image.Height)) * $PaddingFactor
+            $drawWidth = [int][Math]::Round($Image.Width * $scale)
+            $drawHeight = [int][Math]::Round($Image.Height * $scale)
+            $offsetX = [int][Math]::Round(($Width - $drawWidth) / 2)
+            $offsetY = [int][Math]::Round(($Height - $drawHeight) / 2)
+            $graphics.DrawImage($Image, $offsetX, $offsetY, $drawWidth, $drawHeight)
+        } finally {
+            $graphics.Dispose()
+        }
+
+        $bitmap.Save($Destination, [System.Drawing.Imaging.ImageFormat]::Png)
+    } finally {
+        $bitmap.Dispose()
+    }
+}
+
+function writeMsixAssets {
+    param(
+        [string]$AssetDir
+    )
+
+    Add-Type -AssemblyName System.Drawing
+
+    mkdir -Force -path $AssetDir | Out-Null
+    $iconPath = Join-Path $script:SRC_DIR "app\assets\app.ico"
+    $icon = New-Object System.Drawing.Icon($iconPath, 256, 256)
+    $image = $icon.ToBitmap()
+    try {
+        saveMsixPng $image 44 44 (Join-Path $AssetDir "Square44x44Logo.png") 0.90
+        saveMsixPng $image 50 50 (Join-Path $AssetDir "StoreLogo.png") 0.90
+        saveMsixPng $image 71 71 (Join-Path $AssetDir "Square71x71Logo.png") 0.88
+        saveMsixPng $image 150 150 (Join-Path $AssetDir "Square150x150Logo.png") 0.82
+        saveMsixPng $image 310 150 (Join-Path $AssetDir "Wide310x150Logo.png") 0.62
+        saveMsixPng $image 310 310 (Join-Path $AssetDir "Square310x310Logo.png") 0.72
+        saveMsixPng $image 620 300 (Join-Path $AssetDir "SplashScreen.png") 0.48
+    } finally {
+        $image.Dispose()
+        $icon.Dispose()
+    }
+}
+
+function copyVcRuntimeLibraries {
+    param(
+        [string]$Arch,
+        [string]$PackageDir
+    )
+
+    $msvcArch = msixProcessorArchitecture $Arch
+    $patterns = @(
+        "C:\Program Files\Microsoft Visual Studio\2022\*\VC\Redist\MSVC\*\${msvcArch}\Microsoft.VC*.CRT\*.dll",
+        "C:\Program Files (x86)\Microsoft Visual Studio\2022\*\VC\Redist\MSVC\*\${msvcArch}\Microsoft.VC*.CRT\*.dll"
+    )
+
+    $copied = @{}
+    foreach ($pattern in $patterns) {
+        $matches = Get-ChildItem -Path $pattern -ErrorAction SilentlyContinue | Sort-Object FullName -Descending
+        foreach ($match in $matches) {
+            if (-not $copied.ContainsKey($match.Name)) {
+                Copy-Item -Path $match.FullName -Destination (Join-Path $PackageDir $match.Name)
+                $copied[$match.Name] = $true
+            }
+        }
+    }
+
+    if ($copied.Count -eq 0) {
+        Write-Output "WARNING: no VC runtime DLLs found for ${Arch}; the packaged app may require the VC++ runtime to already be installed."
+    } else {
+        Write-Output "Bundled VC runtime DLLs for ${Arch}: $($copied.Keys -join ', ')"
+    }
+}
+
+function writeMsixManifest {
+    param(
+        [string]$Arch,
+        [string]$PackageDir,
+        [string]$Publisher,
+        [string]$PackageVersion
+    )
+
+    $templatePath = Join-Path $script:SRC_DIR "app\msix\AppxManifest.xml.in"
+    $manifestPath = Join-Path $PackageDir "AppxManifest.xml"
+    $displayName = if ($env:APPX_DISPLAY_NAME) { $env:APPX_DISPLAY_NAME } else { $script:MSIX_DISPLAY_NAME }
+    $publisherDisplayName = if ($env:APPX_PUBLISHER_DISPLAY_NAME) { $env:APPX_PUBLISHER_DISPLAY_NAME } else { $script:MSIX_DISPLAY_NAME }
+    $description = if ($env:APPX_DESCRIPTION) { $env:APPX_DESCRIPTION } else { $script:MSIX_DESCRIPTION }
+    $packageName = if ($env:APPX_PACKAGE_NAME) { $env:APPX_PACKAGE_NAME } else { $script:MSIX_PACKAGE_NAME }
+
+    $manifest = Get-Content -Path $templatePath -Raw
+    $manifest = $manifest.Replace("__PACKAGE_NAME__", (xmlEscape $packageName))
+    $manifest = $manifest.Replace("__PUBLISHER__", (xmlEscape $Publisher))
+    $manifest = $manifest.Replace("__PACKAGE_VERSION__", (xmlEscape $PackageVersion))
+    $manifest = $manifest.Replace("__ARCH__", (xmlEscape (msixProcessorArchitecture $Arch)))
+    $manifest = $manifest.Replace("__DISPLAY_NAME__", (xmlEscape $displayName))
+    $manifest = $manifest.Replace("__PUBLISHER_DISPLAY_NAME__", (xmlEscape $publisherDisplayName))
+    $manifest = $manifest.Replace("__DESCRIPTION__", (xmlEscape $description))
+    $manifest = $manifest.Replace("__BACKGROUND_COLOR__", $script:MSIX_BACKGROUND)
+
+    Set-Content -Path $manifestPath -Value $manifest -Encoding utf8
+}
+
+function stageMsixPackage {
+    param(
+        [string]$Arch,
+        [string]$Publisher,
+        [string]$PackageVersion,
+        [string]$MakeAppxTool
+    )
+
+    $appBinary = Join-Path $script:SRC_DIR "dist\windows-ollama-app-${Arch}.exe"
+    $runtimeDir = Join-Path $script:SRC_DIR "dist\windows-${Arch}"
+    if (-not (Test-Path $appBinary)) {
+        Write-Output "ERROR: missing app binary ${appBinary}"
+        exit 1
+    }
+    if (-not (Test-Path (Join-Path $runtimeDir "ollama.exe"))) {
+        Write-Output "ERROR: missing CLI binary for ${Arch} at ${runtimeDir}"
+        exit 1
+    }
+
+    $packageRoot = Join-Path $script:SRC_DIR "dist\msix\${Arch}\package"
+    $assetDir = Join-Path $packageRoot "Assets"
+    $msixPath = Join-Path $script:SRC_DIR "dist\Ollama-$((msixProcessorArchitecture $Arch)).msix"
+
+    Remove-Item -ea 0 -Recurse -Force $packageRoot
+    mkdir -Force -path $packageRoot | Out-Null
+
+    Copy-Item -Path $appBinary -Destination (Join-Path $packageRoot "ollama app.exe")
+    Copy-Item -Path (Join-Path $runtimeDir "ollama.exe") -Destination (Join-Path $packageRoot "ollama.exe")
+
+    $rootDlls = Get-ChildItem -Path $runtimeDir -File -Filter *.dll -ErrorAction SilentlyContinue
+    if ($rootDlls) {
+        Copy-Item -Path $rootDlls.FullName -Destination $packageRoot
+    }
+
+    if (Test-Path (Join-Path $runtimeDir "lib")) {
+        Copy-Item -Path (Join-Path $runtimeDir "lib") -Destination (Join-Path $packageRoot "lib") -Recurse
+    }
+
+    copyVcRuntimeLibraries $Arch $packageRoot
+    writeMsixAssets $assetDir
+    writeMsixManifest $Arch $packageRoot $Publisher $PackageVersion
+
+    Remove-Item -ea 0 -Force $msixPath
+    Write-Output "Packing signed MSIX for ${Arch}: ${msixPath}"
+    & $MakeAppxTool pack /o /h SHA256 /d $packageRoot /p $msixPath
+    if ($LASTEXITCODE -ne 0) { exit($LASTEXITCODE)}
+
+    invokeMsixSignTool @($msixPath)
+
+    return $msixPath
+}
+
+function buildMsixBundle {
+    param(
+        [string[]]$MsixPaths,
+        [string]$PackageVersion,
+        [string]$MakeAppxTool
+    )
+
+    $bundleInputDir = Join-Path $script:SRC_DIR "dist\msix\bundle-input"
+    $bundlePath = Join-Path $script:SRC_DIR "dist\Ollama.msixbundle"
+
+    Remove-Item -ea 0 -Recurse -Force $bundleInputDir
+    mkdir -Force -path $bundleInputDir | Out-Null
+    foreach ($path in $MsixPaths) {
+        Copy-Item -Path $path -Destination (Join-Path $bundleInputDir ([IO.Path]::GetFileName($path)))
+    }
+
+    Remove-Item -ea 0 -Force $bundlePath
+    Write-Output "Packing signed MSIX bundle: ${bundlePath}"
+    & $MakeAppxTool bundle /o /bv $PackageVersion /d $bundleInputDir /p $bundlePath
+    if ($LASTEXITCODE -ne 0) { exit($LASTEXITCODE)}
+
+    invokeMsixSignTool @($bundlePath)
+
+    return $bundlePath
+}
+
+function writeAppInstallerFile {
+    param(
+        [string]$MainArtifact,
+        [bool]$IsBundle,
+        [string]$Publisher,
+        [string]$PackageVersion,
+        [string[]]$Architectures
+    )
+
+    $baseUri = appInstallerBaseUri
+    if (-not $baseUri) {
+        Write-Output "APPINSTALLER_BASE_URI is not set and no GitHub release context is available; skipping .appinstaller generation."
+        return
+    }
+
+    $packageName = if ($env:APPX_PACKAGE_NAME) { $env:APPX_PACKAGE_NAME } else { $script:MSIX_PACKAGE_NAME }
+    $artifactName = [IO.Path]::GetFileName($MainArtifact)
+    $artifactUri = "${baseUri}/${artifactName}"
+    $appInstallerPath = Join-Path $script:SRC_DIR "dist\Ollama.appinstaller"
+    $appInstallerUri = "${baseUri}/Ollama.appinstaller"
+    if ($IsBundle) {
+        $mainPackageNode = '  <MainBundle Name="{0}" Version="{1}" Publisher="{2}" Uri="{3}" />' -f (xmlEscape $packageName), (xmlEscape $PackageVersion), (xmlEscape $Publisher), (xmlEscape $artifactUri)
+    } else {
+        $arch = msixProcessorArchitecture $Architectures[0]
+        $mainPackageNode = '  <MainPackage Name="{0}" Version="{1}" Publisher="{2}" ProcessorArchitecture="{3}" Uri="{4}" />' -f (xmlEscape $packageName), (xmlEscape $PackageVersion), (xmlEscape $Publisher), (xmlEscape $arch), (xmlEscape $artifactUri)
+    }
+
+    $content = @"
+<?xml version="1.0" encoding="utf-8"?>
+<AppInstaller xmlns="http://schemas.microsoft.com/appx/appinstaller/2018"
+  Uri="$(xmlEscape $appInstallerUri)"
+  Version="$(xmlEscape $PackageVersion)">
+$mainPackageNode
+  <UpdateSettings>
+    <OnLaunch HoursBetweenUpdateChecks="0" ShowPrompt="true" UpdateBlocksActivation="false" />
+    <AutomaticBackgroundTask />
+    <ForceUpdateFromAnyVersion>true</ForceUpdateFromAnyVersion>
+  </UpdateSettings>
+</AppInstaller>
+"@
+
+    Set-Content -Path $appInstallerPath -Value $content -Encoding utf8
+    Write-Output "Generated App Installer manifest ${appInstallerPath}"
+}
+
+function appinstaller {
+    requireCodeSigning "App Installer packaging"
+
+    $makeAppxTool = findWindowsSdkTool "MakeAppx.exe"
+    if ($null -eq $makeAppxTool) {
+        Write-Output "ERROR: missing MakeAppx.exe - install the Windows SDK to build MSIX/App Installer packages"
+        exit 1
+    }
+
+    $publisher = msixPublisher
+    $packageVersion = msixPackageVersion
+    $availableArchs = @()
+    foreach ($candidate in @("amd64", "arm64")) {
+        if ((Test-Path (Join-Path $script:SRC_DIR "dist\windows-ollama-app-${candidate}.exe")) -and (Test-Path (Join-Path $script:SRC_DIR "dist\windows-${candidate}\ollama.exe"))) {
+            $availableArchs += $candidate
+        }
+    }
+
+    if ($availableArchs.Count -eq 0) {
+        Write-Output "ERROR: no Windows app artifacts found in dist for MSIX packaging"
+        exit 1
+    }
+
+    Remove-Item -ea 0 -Force "${script:SRC_DIR}\dist\*.msix"
+    Remove-Item -ea 0 -Force "${script:SRC_DIR}\dist\*.msixbundle"
+    Remove-Item -ea 0 -Force "${script:SRC_DIR}\dist\*.appinstaller"
+
+    $packages = @()
+    foreach ($arch in $availableArchs) {
+        $packages += (stageMsixPackage $arch $publisher $packageVersion $makeAppxTool)
+    }
+
+    $mainArtifact = if ($packages.Count -gt 1) {
+        buildMsixBundle $packages $packageVersion $makeAppxTool
+    } else {
+        $packages[0]
+    }
+
+    writeAppInstallerFile $mainArtifact ($packages.Count -gt 1) $publisher $packageVersion $availableArchs
 }
 
 
@@ -392,18 +809,12 @@ function sign {
     Write-Output "Copying install.ps1 to dist"
     Copy-Item -Path "${script:SRC_DIR}\scripts\install.ps1" -Destination "${script:SRC_DIR}\dist\install.ps1" -ErrorAction Stop
 
-    if ("${env:KEY_CONTAINER}") {
+    if (signingEnabled) {
         Write-Output "Signing Ollama executables, scripts and libraries"
-        & "${script:SignTool}" sign /v /fd sha256 /t http://timestamp.digicert.com /f "${script:OLLAMA_CERT}" `
-            /csp "Google Cloud KMS Provider" /kc ${env:KEY_CONTAINER} `
-            $(get-childitem -path "${script:SRC_DIR}\dist\windows-*" -r -include @('*.exe', '*.dll'))
-        if ($LASTEXITCODE -ne 0) { exit($LASTEXITCODE)}
+        invokeSignTool @((get-childitem -path "${script:SRC_DIR}\dist\windows-*" -r -include @('*.exe', '*.dll') | ForEach-Object { $_.FullName }))
 
         Write-Output "Signing install.ps1"
-        & "${script:SignTool}" sign /v /fd sha256 /t http://timestamp.digicert.com /f "${script:OLLAMA_CERT}" `
-            /csp "Google Cloud KMS Provider" /kc ${env:KEY_CONTAINER} `
-            "${script:SRC_DIR}\dist\install.ps1"
-        if ($LASTEXITCODE -ne 0) { exit($LASTEXITCODE)}
+        invokeSignTool @("${script:SRC_DIR}\dist\install.ps1")
     } else {
         Write-Output "Signing not enabled"
     }
@@ -417,7 +828,7 @@ function installer {
     Write-Output "Building Ollama Installer"
     cd "${script:SRC_DIR}\app"
     $env:PKG_VERSION=$script:PKG_VERSION
-    if ("${env:KEY_CONTAINER}") {
+    if (signingEnabled) {
         & "${script:INNO_SETUP_DIR}\ISCC.exe" /DARCH=$script:TARGET_ARCH /SMySignTool="${script:SignTool} sign /fd sha256 /t http://timestamp.digicert.com /f ${script:OLLAMA_CERT} /csp `$qGoogle Cloud KMS Provider`$q /kc ${env:KEY_CONTAINER} `$f" .\ollama.iss
     } else {
         & "${script:INNO_SETUP_DIR}\ISCC.exe" /DARCH=$script:TARGET_ARCH .\ollama.iss
@@ -534,6 +945,11 @@ try {
         deps
         sign
         installer
+        if (signingEnabled) {
+            appinstaller
+        } else {
+            Write-Output "Skipping App Installer packaging because code signing is not enabled"
+        }
         zip
     } else {
         for ( $i = 0; $i -lt $args.count; $i++ ) {

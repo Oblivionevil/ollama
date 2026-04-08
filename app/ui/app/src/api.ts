@@ -16,15 +16,49 @@ import { ollamaClient as ollama } from "./lib/ollama-client";
 import type { ModelResponse } from "ollama/browser";
 import { API_BASE, OLLAMA_DOT_COM } from "./lib/config";
 
+type ExtendedModelResponse = ModelResponse & {
+  remote?: boolean;
+  remote_host?: string;
+  remote_model?: string;
+  requires_auth?: boolean;
+};
+
+type ExtendedShowResponse = {
+  capabilities?: string[];
+  reasoning_levels?: string[];
+  requires_auth?: boolean;
+  remote_host?: string;
+  remote_model?: string;
+};
+
 // Extend Model class with utility methods
 declare module "@/gotypes" {
   interface Model {
+    remote?: boolean;
+    remoteHost?: string;
+    remoteModel?: string;
+    requiresAuthentication?: boolean;
     isCloud(): boolean;
+    isRemote(): boolean;
+    requiresAuth(): boolean;
+  }
+
+  interface ModelCapabilitiesResponse {
+    reasoningLevels?: string[];
+    requiresAuthentication?: boolean;
   }
 }
 
+Model.prototype.isRemote = function (): boolean {
+  return Boolean(this.remote || this.remoteHost || this.remoteModel);
+};
+
+Model.prototype.requiresAuth = function (): boolean {
+  return Boolean(this.requiresAuthentication ?? this.isRemote());
+};
+
 Model.prototype.isCloud = function (): boolean {
-  return this.model.endsWith("cloud");
+  return this.isRemote();
 };
 
 export type CloudStatusSource = "env" | "config" | "both" | "none";
@@ -76,6 +110,7 @@ export async function fetchConnectUrl(): Promise<string> {
     headers: {
       "Content-Type": "application/json",
     },
+    body: JSON.stringify({ connect: true }),
   });
 
   if (response.status === 401) {
@@ -118,7 +153,7 @@ export async function getModels(query?: string): Promise<Model[]> {
     const { models: modelsResponse } = await ollama.list();
 
     let models: Model[] = modelsResponse
-      .filter((m: ModelResponse) => {
+      .filter((m: ExtendedModelResponse) => {
         const families = m.details?.families;
 
         if (!families || families.length === 0) {
@@ -131,43 +166,33 @@ export async function getModels(query?: string): Promise<Model[]> {
 
         return !isBertOnly;
       })
-      .map((m: ModelResponse) => {
+      .map((m: ExtendedModelResponse) => {
         // Remove the latest tag from the returned model
         const modelName = m.name.replace(/:latest$/, "");
 
-        return new Model({
+        const model = new Model({
           model: modelName,
           digest: m.digest,
           modified_at: m.modified_at ? new Date(m.modified_at) : undefined,
         });
+
+        model.remote = Boolean(m.remote ?? m.remote_host ?? m.remote_model);
+        model.remoteHost = m.remote_host;
+        model.remoteModel = m.remote_model;
+        model.requiresAuthentication = Boolean(
+          m.requires_auth ?? model.remote,
+        );
+
+        return model;
       });
 
     // Filter by query if provided
     if (query) {
       const normalizedQuery = query.toLowerCase().trim();
 
-      const filteredModels = models.filter((m: Model) => {
+      models = models.filter((m: Model) => {
         return m.model.toLowerCase().startsWith(normalizedQuery);
       });
-
-      let exactMatch = false;
-      for (const m of filteredModels) {
-        if (m.model.toLowerCase() === normalizedQuery) {
-          exactMatch = true;
-          break;
-        }
-      }
-
-      // Add query if it's in the registry and not already in the list
-      if (!exactMatch) {
-        const result = await getModelUpstreamInfo(new Model({ model: query }));
-        const existsUpstream = result.exists;
-        if (existsUpstream) {
-          filteredModels.push(new Model({ model: query }));
-        }
-      }
-
-      models = filteredModels;
     }
 
     return models;
@@ -180,17 +205,35 @@ export async function getModelCapabilities(
   modelName: string,
 ): Promise<ModelCapabilitiesResponse> {
   try {
-    const showResponse = await ollama.show({ model: modelName });
+    const showResponse = (await ollama.show({
+      model: modelName,
+    })) as ExtendedShowResponse;
 
-    return new ModelCapabilitiesResponse({
+    const response = new ModelCapabilitiesResponse({
       capabilities: Array.isArray(showResponse.capabilities)
         ? showResponse.capabilities
         : [],
     });
+
+    response.reasoningLevels = Array.isArray(showResponse.reasoning_levels)
+      ? showResponse.reasoning_levels.filter(
+          (level): level is string => typeof level === "string" && level !== "",
+        )
+      : [];
+    response.requiresAuthentication = Boolean(
+      showResponse.requires_auth ??
+        showResponse.remote_host ??
+        showResponse.remote_model,
+    );
+
+    return response;
   } catch (error) {
     // Model might not be downloaded yet, return empty capabilities
     console.error(`Failed to get capabilities for ${modelName}:`, error);
-    return new ModelCapabilitiesResponse({ capabilities: [] });
+    const response = new ModelCapabilitiesResponse({ capabilities: [] });
+    response.reasoningLevels = [];
+    response.requiresAuthentication = false;
+    return response;
   }
 }
 
@@ -420,8 +463,7 @@ export async function getInferenceCompute(): Promise<InferenceComputeResponse> {
 
 export async function fetchHealth(): Promise<boolean> {
   try {
-    // Use the /api/version endpoint as a health check
-    const response = await fetch(`${API_BASE}/api/version`, {
+    const response = await fetch(`${API_BASE}/api/v1/health`, {
       method: "GET",
       headers: {
         "Content-Type": "application/json",
@@ -429,9 +471,7 @@ export async function fetchHealth(): Promise<boolean> {
     });
 
     if (response.ok) {
-      const data = await response.json();
-      // If we get a version back, the server is healthy
-      return !!data.version;
+      return true;
     }
 
     return false;

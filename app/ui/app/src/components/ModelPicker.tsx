@@ -8,12 +8,6 @@ import {
 } from "react";
 import { Model } from "@/gotypes";
 import { useSelectedModel } from "@/hooks/useSelectedModel";
-import { useCloudStatus } from "@/hooks/useCloudStatus";
-import { useQueryClient } from "@tanstack/react-query";
-import { getModelUpstreamInfo } from "@/api";
-import { ArrowDownTrayIcon } from "@heroicons/react/24/outline";
-
-const stalenessCheckCache = new Map<string, number>();
 
 export const ModelPicker = forwardRef<
   HTMLButtonElement,
@@ -30,49 +24,16 @@ export const ModelPicker = forwardRef<
 ): JSX.Element {
   const [isOpen, setIsOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
-  const { selectedModel, setSettings, models, loading } = useSelectedModel(
+  const { selectedModel, setSettings, models } = useSelectedModel(
     chatId,
     searchQuery,
   );
-  const { cloudDisabled } = useCloudStatus();
   const dropdownRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
-  const queryClient = useQueryClient();
   const modelListRef = useRef<{
     scrollToSelectedModel: () => void;
     scrollToTop: () => void;
   }>(null);
-
-  const checkModelStaleness = async (model: Model) => {
-    if (
-      !model ||
-      !model.model ||
-      model.digest === undefined ||
-      model.digest === ""
-    )
-      return;
-
-    // Check cache - only check staleness every 5 minutes per model
-    const now = Date.now();
-    const lastChecked = stalenessCheckCache.get(model.model);
-    if (lastChecked && now - lastChecked < 5 * 60 * 1000) return;
-    stalenessCheckCache.set(model.model, now);
-
-    try {
-      const upstreamInfo = await getModelUpstreamInfo(model);
-
-      if (upstreamInfo.stale) {
-        const currentStaleModels =
-          queryClient.getQueryData<Map<string, boolean>>(["staleModels"]) ||
-          new Map();
-        const newMap = new Map(currentStaleModels);
-        newMap.set(model.model, true);
-        queryClient.setQueryData(["staleModels"], newMap);
-      }
-    } catch (error) {
-      console.error("Failed to check model staleness:", error);
-    }
-  };
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -110,12 +71,6 @@ export const ModelPicker = forwardRef<
       modelListRef.current.scrollToTop();
     }
   }, [searchQuery]);
-
-  useEffect(() => {
-    if (selectedModel && !loading) {
-      checkModelStaleness(selectedModel);
-    }
-  }, [selectedModel?.model, loading]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -202,7 +157,6 @@ export const ModelPicker = forwardRef<
             models={models}
             selectedModel={selectedModel}
             onModelSelect={handleModelSelect}
-            cloudDisabled={cloudDisabled}
             isOpen={isOpen}
           />
         </div>
@@ -216,13 +170,11 @@ export const ModelList = forwardRef(function ModelList(
     models,
     selectedModel,
     onModelSelect,
-    cloudDisabled,
     isOpen,
   }: {
     models: Model[];
     selectedModel: Model | null;
     onModelSelect: (model: Model) => void;
-    cloudDisabled: boolean;
     isOpen: boolean;
   },
   ref,
@@ -330,13 +282,6 @@ export const ModelList = forwardRef(function ModelList(
                     <path d="M4.01511 14.5861H14.2304C16.9183 14.5861 19.0002 12.5509 19.0002 9.9403C19.0002 7.30491 16.8911 5.3046 14.0203 5.3046C12.9691 3.23016 11.0602 2 8.69505 2C5.62816 2 3.04822 4.32758 2.72935 7.47455C1.12954 7.95356 0.0766602 9.29431 0.0766602 10.9757C0.0766602 12.9913 1.55776 14.5861 4.01511 14.5861ZM4.02056 13.1261C2.46452 13.1261 1.53673 12.2938 1.53673 11.0161C1.53673 9.91553 2.24207 9.12934 3.51367 8.79302C3.95684 8.68258 4.11901 8.48427 4.16138 8.00729C4.39317 5.3613 6.29581 3.46007 8.69505 3.46007C10.5231 3.46007 11.955 4.48273 12.8385 6.26013C13.0338 6.65439 13.2626 6.7882 13.7488 6.7882C16.1671 6.7882 17.5337 8.19719 17.5337 9.97707C17.5337 11.7526 16.1242 13.1261 14.2852 13.1261H4.02056Z" />
                   </svg>
                 )}
-                {model.digest === undefined &&
-                  (cloudDisabled || !model.isCloud()) && (
-                    <ArrowDownTrayIcon
-                      className="h-4 w-4 text-neutral-500 dark:text-neutral-400"
-                      strokeWidth={1.75}
-                    />
-                  )}
               </button>
             </div>
           );

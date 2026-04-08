@@ -14,7 +14,7 @@ import (
 
 // currentSchemaVersion defines the current database schema version.
 // Increment this when making schema changes that require migrations.
-const currentSchemaVersion = 16
+const currentSchemaVersion = 17
 
 // database wraps the SQLite connection.
 // SQLite handles its own locking for concurrent access:
@@ -149,6 +149,20 @@ func (db *database) init() error {
 		plan TEXT NOT NULL DEFAULT '',
 		cached_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 	);
+
+	CREATE TABLE IF NOT EXISTS auth_sessions (
+		provider TEXT NOT NULL DEFAULT '',
+		user_id TEXT NOT NULL DEFAULT '',
+		username TEXT NOT NULL DEFAULT '',
+		name TEXT NOT NULL DEFAULT '',
+		email TEXT NOT NULL DEFAULT '',
+		avatar_url TEXT NOT NULL DEFAULT '',
+		plan TEXT NOT NULL DEFAULT '',
+		access_token TEXT NOT NULL DEFAULT '',
+		copilot_token TEXT NOT NULL DEFAULT '',
+		copilot_token_expires_at TIMESTAMP,
+		updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+	);
 	`, currentSchemaVersion)
 
 	_, err := db.conn.Exec(schema)
@@ -271,6 +285,12 @@ func (db *database) migrate() error {
 				return fmt.Errorf("migrate v15 to v16: %w", err)
 			}
 			version = 16
+		case 16:
+			// add auth_sessions table for persisted desktop provider login
+			if err := db.migrateV16ToV17(); err != nil {
+				return fmt.Errorf("migrate v16 to v17: %w", err)
+			}
+			version = 17
 		default:
 			// If we have a version we don't recognize, just set it to current
 			// This might happen during development
@@ -533,6 +553,35 @@ func (db *database) migrateV15ToV16() error {
 	}
 
 	_, err = db.conn.Exec(`UPDATE settings SET schema_version = 16`)
+	if err != nil {
+		return fmt.Errorf("update schema version: %w", err)
+	}
+
+	return nil
+}
+
+// migrateV16ToV17 adds the auth_sessions table used by the desktop Copilot login flow.
+func (db *database) migrateV16ToV17() error {
+	_, err := db.conn.Exec(`
+		CREATE TABLE IF NOT EXISTS auth_sessions (
+			provider TEXT NOT NULL DEFAULT '',
+			user_id TEXT NOT NULL DEFAULT '',
+			username TEXT NOT NULL DEFAULT '',
+			name TEXT NOT NULL DEFAULT '',
+			email TEXT NOT NULL DEFAULT '',
+			avatar_url TEXT NOT NULL DEFAULT '',
+			plan TEXT NOT NULL DEFAULT '',
+			access_token TEXT NOT NULL DEFAULT '',
+			copilot_token TEXT NOT NULL DEFAULT '',
+			copilot_token_expires_at TIMESTAMP,
+			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)
+	`)
+	if err != nil {
+		return fmt.Errorf("create auth_sessions table: %w", err)
+	}
+
+	_, err = db.conn.Exec(`UPDATE settings SET schema_version = 17`)
 	if err != nil {
 		return fmt.Errorf("update schema version: %w", err)
 	}
@@ -1340,5 +1389,89 @@ func (db *database) clearUser() error {
 	if err != nil {
 		return fmt.Errorf("clear user: %w", err)
 	}
+	return nil
+}
+
+func (db *database) getAuthSession() (*AuthSession, error) {
+	var session AuthSession
+	var expiresAt sql.NullTime
+
+	err := db.conn.QueryRow(`
+		SELECT provider, user_id, username, name, email, avatar_url, plan, access_token, copilot_token, copilot_token_expires_at, updated_at
+		FROM auth_sessions
+		LIMIT 1
+	`).Scan(
+		&session.Provider,
+		&session.UserID,
+		&session.Username,
+		&session.Name,
+		&session.Email,
+		&session.AvatarURL,
+		&session.Plan,
+		&session.AccessToken,
+		&session.CopilotToken,
+		&expiresAt,
+		&session.UpdatedAt,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("get auth session: %w", err)
+	}
+
+	if expiresAt.Valid {
+		session.CopilotTokenExpiresAt = &expiresAt.Time
+	}
+
+	return &session, nil
+}
+
+func (db *database) setAuthSession(session AuthSession) error {
+	if err := db.clearAuthSession(); err != nil {
+		return fmt.Errorf("before set auth session: %w", err)
+	}
+
+	_, err := db.conn.Exec(`
+		INSERT INTO auth_sessions (
+			provider,
+			user_id,
+			username,
+			name,
+			email,
+			avatar_url,
+			plan,
+			access_token,
+			copilot_token,
+			copilot_token_expires_at,
+			updated_at
+		)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`,
+		session.Provider,
+		session.UserID,
+		session.Username,
+		session.Name,
+		session.Email,
+		session.AvatarURL,
+		session.Plan,
+		session.AccessToken,
+		session.CopilotToken,
+		session.CopilotTokenExpiresAt,
+		session.UpdatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("set auth session: %w", err)
+	}
+
+	return nil
+}
+
+func (db *database) clearAuthSession() error {
+	_, err := db.conn.Exec("DELETE FROM auth_sessions")
+	if err != nil {
+		return fmt.Errorf("clear auth session: %w", err)
+	}
+
 	return nil
 }

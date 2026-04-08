@@ -18,6 +18,7 @@ import {
 import { useNavigate } from "@tanstack/react-router";
 import { useSelectedModel } from "@/hooks/useSelectedModel";
 import {
+  useModelCapabilities,
   useHasVisionCapability,
   useHasToolsCapability,
 } from "@/hooks/useModelCapabilities";
@@ -25,14 +26,13 @@ import { useUser } from "@/hooks/useUser";
 import { DisplayLogin } from "@/components/DisplayLogin";
 import { ErrorEvent, Message } from "@/gotypes";
 import { useSettings } from "@/hooks/useSettings";
-import { useCloudStatus } from "@/hooks/useCloudStatus";
 import { ThinkButton } from "./ThinkButton";
 import { ErrorMessage } from "./ErrorMessage";
 import { processFiles } from "@/utils/fileValidation";
 import type { ImageData } from "@/types/webview";
 import { PlusIcon } from "@heroicons/react/24/outline";
 
-export type ThinkingLevel = "low" | "medium" | "high";
+export type ThinkingLevel = string;
 
 interface FileAttachment {
   filename: string;
@@ -113,10 +113,13 @@ function ChatForm({
   const cancelMessage = useCancelMessage();
   const isDownloading = isDownloadingModel;
   const { selectedModel } = useSelectedModel();
+  const { data: modelCapabilitiesResponse } = useModelCapabilities(
+    selectedModel?.model,
+  );
   const hasVisionCapability = useHasVisionCapability(selectedModel?.model);
   const { isAuthenticated, isLoading: isLoadingUser } = useUser();
   const [loginPromptFeature, setLoginPromptFeature] = useState<
-    "webSearch" | "turbo" | null
+    "webSearch" | "model" | null
   >(null);
   const [fileUploadError, setFileUploadError] = useState<ErrorEvent | null>(
     null,
@@ -150,22 +153,33 @@ function ChatForm({
     },
     setSettings,
   } = useSettings();
-  const { cloudDisabled } = useCloudStatus();
 
   const supportsWebSearch = useHasToolsCapability(selectedModel?.model);
-  // Use per-chat thinking level instead of global
+  const supportsThinking =
+    modelCapabilitiesResponse?.capabilities?.includes("thinking") ?? false;
+  const reasoningLevels = modelCapabilitiesResponse?.reasoningLevels ?? [];
+  const selectedModelRequiresAuthentication =
+    selectedModel?.requiresAuth() ||
+    modelCapabilitiesResponse?.requiresAuthentication ||
+    false;
+  const defaultThinkingLevel = reasoningLevels.includes("medium")
+    ? "medium"
+    : (reasoningLevels[0] ?? "medium");
   const thinkLevel: ThinkingLevel =
-    settingsThinkLevel === "none" || !settingsThinkLevel
-      ? "medium"
-      : (settingsThinkLevel as ThinkingLevel);
+    reasoningLevels.length > 0
+      ? reasoningLevels.includes(settingsThinkLevel)
+        ? settingsThinkLevel
+        : defaultThinkingLevel
+      : settingsThinkLevel === "none" || !settingsThinkLevel
+        ? "medium"
+        : settingsThinkLevel;
   const setThinkingLevel = (newLevel: ThinkingLevel) => {
     setSettings({ ThinkLevel: newLevel });
   };
 
   const modelSupportsThinkingLevels =
-    selectedModel?.model.toLowerCase().startsWith("gpt-oss") || false;
-  const supportsThinkToggling =
-    selectedModel?.model.toLowerCase().startsWith("deepseek-v3.1") || false;
+    reasoningLevels.length > 0;
+  const supportsThinkToggling = supportsThinking && !modelSupportsThinkingLevels;
 
   useEffect(() => {
     if (supportsThinkToggling && thinkEnabled && webSearchEnabled) {
@@ -178,12 +192,6 @@ function ChatForm({
     webSearchEnabled,
     setSettings,
   ]);
-
-  useEffect(() => {
-    if (cloudDisabled && webSearchEnabled) {
-      setSettings({ WebSearchEnabled: false });
-    }
-  }, [cloudDisabled, webSearchEnabled, setSettings]);
 
   const removeFile = (index: number) => {
     setMessage((prev) => ({
@@ -237,21 +245,40 @@ function ChatForm({
     }
   }, [onFilesReceived, handleFilesReceived]);
 
+  const processSelectedFiles = useCallback(
+    async (files: File[]) => {
+      if (files.length === 0) {
+        return;
+      }
+
+      const { validFiles, errors } = await processFiles(files, {
+        selectedModel,
+        hasVisionCapability,
+      });
+
+      if (validFiles.length > 0 || errors.length > 0) {
+        handleFilesReceived(validFiles, errors);
+      }
+    },
+    [selectedModel, hasVisionCapability, handleFilesReceived],
+  );
+
   // Determine if login banner should be shown
   const shouldShowLoginBanner =
-    !cloudDisabled &&
     !isLoadingUser &&
     !isAuthenticated &&
-    ((webSearchEnabled && supportsWebSearch) || selectedModel?.isCloud());
+    ((webSearchEnabled && supportsWebSearch) ||
+      selectedModelRequiresAuthentication);
 
   // Determine which feature to highlight in the banner
   const getActiveFeatureForBanner = () => {
-    if (cloudDisabled) return null;
     if (!isAuthenticated) {
       if (loginPromptFeature) return loginPromptFeature;
-      if (webSearchEnabled && selectedModel?.isCloud()) return "webSearch";
+      if (webSearchEnabled && selectedModelRequiresAuthentication) {
+        return "webSearch";
+      }
       if (webSearchEnabled) return "webSearch";
-      if (selectedModel?.isCloud()) return "turbo";
+      if (selectedModelRequiresAuthentication) return "model";
     }
     return null;
   };
@@ -274,12 +301,15 @@ function ChatForm({
   useEffect(() => {
     if (
       isAuthenticated ||
-      cloudDisabled ||
-      (!webSearchEnabled && !!selectedModel?.isCloud())
+      (!webSearchEnabled && selectedModelRequiresAuthentication)
     ) {
       setLoginPromptFeature(null);
     }
-  }, [isAuthenticated, webSearchEnabled, selectedModel, cloudDisabled]);
+  }, [
+    isAuthenticated,
+    webSearchEnabled,
+    selectedModelRequiresAuthentication,
+  ]);
 
   // When entering edit mode, populate the composition with existing data
   useEffect(() => {
@@ -471,10 +501,6 @@ function ChatForm({
   const handleSubmit = async () => {
     if (!message.content.trim() || isStreaming || isDownloading) return;
 
-    if (cloudDisabled && selectedModel?.isCloud()) {
-      return;
-    }
-
     // Check if cloud mode is enabled but user is not authenticated
     if (shouldShowLoginBanner) {
       return;
@@ -489,7 +515,7 @@ function ChatForm({
     );
 
     const useWebSearch =
-      supportsWebSearch && webSearchEnabled && !cloudDisabled;
+      supportsWebSearch && webSearchEnabled;
     const useThink = modelSupportsThinkingLevels
       ? thinkLevel
       : supportsThinkToggling
@@ -608,14 +634,29 @@ function ChatForm({
     }, 0);
   };
 
-  const handleFileInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileInputChange = async (
+    e: React.ChangeEvent<HTMLInputElement>,
+  ) => {
     const files = e.target.files;
     if (!files) return;
 
-    Array.from(files).forEach((file) => {
-      const reader = new FileReader();
-      reader.readAsDataURL(file);
-    });
+    try {
+      setFileUploadError(null);
+      await processSelectedFiles(Array.from(files));
+    } catch (error) {
+      console.error("Error processing selected files:", error);
+
+      const errorEvent = new ErrorEvent({
+        eventName: "error" as const,
+        error:
+          error instanceof Error ? error.message : "Failed to process files",
+        code: "file_processing_error",
+        details:
+          "An error occurred while processing the selected files. Please try again.",
+      });
+
+      setFileUploadError(errorEvent);
+    }
 
     // Reset file input
     if (e.target) {
@@ -636,7 +677,12 @@ function ChatForm({
     try {
       setFileUploadError(null);
 
-      const results = await window.webview?.selectMultipleFiles();
+      if (!window.webview?.selectMultipleFiles) {
+        fileInputRef.current?.click();
+        return;
+      }
+
+      const results = await window.webview.selectMultipleFiles();
       if (results && results.length > 0) {
         // Convert native dialog results to File objects
         const files = results
@@ -661,17 +707,7 @@ function ChatForm({
           })
           .filter(Boolean) as File[];
 
-        if (files.length > 0) {
-          const { validFiles, errors } = await processFiles(files, {
-            selectedModel,
-            hasVisionCapability,
-          });
-
-          // Send processed files and errors to the same handler as FileUpload
-          if (validFiles.length > 0 || errors.length > 0) {
-            handleFilesReceived(validFiles, errors);
-          }
-        }
+        await processSelectedFiles(files);
       }
     } catch (error) {
       console.error("Error selecting multiple files:", error);
@@ -877,6 +913,7 @@ function ChatForm({
                       mode="thinkingLevel"
                       ref={thinkingLevelButtonRef}
                       isVisible={modelSupportsThinkingLevels}
+                      availableLevels={reasoningLevels}
                       currentLevel={thinkLevel}
                       onLevelChange={setThinkingLevel}
                       onDropdownToggle={handleThinkingLevelDropdownToggle}
@@ -910,7 +947,7 @@ function ChatForm({
                 )}
                 <WebSearchButton
                   ref={webSearchButtonRef}
-                  isVisible={supportsWebSearch && cloudDisabled === false}
+			  isVisible={supportsWebSearch}
                   isActive={webSearchEnabled}
                   onToggle={() => {
                     if (!webSearchEnabled && !isAuthenticated) {
@@ -951,7 +988,6 @@ function ChatForm({
                 !isDownloading &&
                 (!message.content.trim() ||
                   shouldShowLoginBanner ||
-                  (cloudDisabled && selectedModel?.isCloud()) ||
                   message.fileErrors.length > 0)
               }
               className={`flex items-center justify-center h-9 w-9 rounded-full disabled:cursor-default cursor-pointer bg-black text-white dark:bg-white dark:text-black disabled:opacity-10 focus:outline-none focus:ring-2 focus:ring-blue-500`}

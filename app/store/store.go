@@ -31,6 +31,20 @@ type User struct {
 	CachedAt time.Time `json:"cachedAt"`
 }
 
+type AuthSession struct {
+	Provider              string     `json:"provider"`
+	UserID                string     `json:"userId"`
+	Username              string     `json:"username"`
+	Name                  string     `json:"name"`
+	Email                 string     `json:"email"`
+	AvatarURL             string     `json:"avatarUrl"`
+	Plan                  string     `json:"plan"`
+	AccessToken           string     `json:"accessToken"`
+	CopilotToken          string     `json:"copilotToken"`
+	CopilotTokenExpiresAt *time.Time `json:"copilotTokenExpiresAt,omitempty"`
+	UpdatedAt             time.Time  `json:"updatedAt"`
+}
+
 type Message struct {
 	Role              string           `json:"role"`
 	Content           string           `json:"content"`
@@ -523,6 +537,31 @@ func (s *Store) ClearUser() error {
 	}
 
 	return s.db.clearUser()
+}
+
+func (s *Store) AuthSession() (*AuthSession, error) {
+	if err := s.ensureDB(); err != nil {
+		return nil, err
+	}
+
+	return s.db.getAuthSession()
+}
+
+func (s *Store) SetAuthSession(session AuthSession) error {
+	if err := s.ensureDB(); err != nil {
+		return err
+	}
+
+	session.UpdatedAt = time.Now()
+	return s.db.setAuthSession(session)
+}
+
+func (s *Store) ClearAuthSession() error {
+	if err := s.ensureDB(); err != nil {
+		return err
+	}
+
+	return s.db.clearAuthSession()
 }
 
 func (s *Store) Close() error {

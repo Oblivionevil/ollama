@@ -368,7 +368,7 @@ jobs:
         run: |
           gci -path .\dist -recurse
       - run: |
-          ./scripts/build_windows.ps1 deps sign installer zip
+          ./scripts/build_windows.ps1 deps sign installer appinstaller zip
       - name: Log contents after build
         run: |
           gci -path .\dist -Recurse -File | ForEach-Object { get-filehash -path $_.FullName -Algorithm SHA256 } | format-list
@@ -379,6 +379,9 @@ jobs:
             dist/*.zip
             dist/*.ps1
             dist/OllamaSetup.exe
+            dist/*.msix
+            dist/*.msixbundle
+            dist/*.appinstaller
 
   linux-build:
     strategy:
@@ -581,7 +584,7 @@ jobs:
       - name: Upload release artifacts
         run: |
           pids=()
-          for payload in dist/*.txt dist/*.zip dist/*.tgz dist/*.tar.zst dist/*.exe dist/*.dmg dist/*.ps1 dist/*.sh ; do
+          for payload in dist/*.txt dist/*.zip dist/*.tgz dist/*.tar.zst dist/*.exe dist/*.dmg dist/*.ps1 dist/*.sh dist/*.msix dist/*.msixbundle dist/*.appinstaller ; do
             echo "Uploading $payload"
             gh release upload ${GITHUB_REF_NAME} $payload --clobber &
             pids+=($!)
