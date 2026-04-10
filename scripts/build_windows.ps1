@@ -34,10 +34,18 @@ function findVisualStudioDeveloperCommand {
 }
 
 function findVisualStudioLlvmBinDir {
-    $patterns = @(
-        "C:\Program Files\Microsoft Visual Studio\*\*\VC\Tools\Llvm\x64\bin",
-        "C:\Program Files (x86)\Microsoft Visual Studio\*\*\VC\Tools\Llvm\x64\bin"
-    )
+    $hostDirs = switch ($script:TARGET_ARCH) {
+        "arm64" { @("ARM64", "x64") }
+        default { @("x64", "ARM64") }
+    }
+
+    $patterns = @()
+    foreach ($hostDir in $hostDirs) {
+        $patterns += @(
+            "C:\Program Files\Microsoft Visual Studio\*\*\VC\Tools\Llvm\${hostDir}\bin",
+            "C:\Program Files (x86)\Microsoft Visual Studio\*\*\VC\Tools\Llvm\${hostDir}\bin"
+        )
+    }
 
     foreach ($pattern in $patterns) {
         $match = Get-ChildItem -Path $pattern -Directory -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -First 1
@@ -47,6 +55,14 @@ function findVisualStudioLlvmBinDir {
     }
 
     return $null
+}
+
+function getWindowsClangTargetTriple {
+    switch ($script:TARGET_ARCH) {
+        "amd64" { return "x86_64-pc-windows-msvc" }
+        "arm64" { return "aarch64-pc-windows-msvc" }
+        default { return $null }
+    }
 }
 
 function importCmdEnvironment {
@@ -126,6 +142,7 @@ function configureWindowsCgoToolchain {
 
     $vsDevCmd = findVisualStudioDeveloperCommand
     $llvmBinDir = findVisualStudioLlvmBinDir
+    $targetTriple = getWindowsClangTargetTriple
     if ($vsDevCmd -and $llvmBinDir) {
         $vsArch = switch ($script:TARGET_ARCH) {
             "amd64" { "x64" }
@@ -133,17 +150,17 @@ function configureWindowsCgoToolchain {
             default { $null }
         }
 
-        if ($vsArch -and (importCmdEnvironment $vsDevCmd @("-arch=$vsArch"))) {
+        if ($vsArch -and $targetTriple -and (importCmdEnvironment $vsDevCmd @("-arch=$vsArch"))) {
             if ($env:PATH -notmatch [regex]::Escape($llvmBinDir)) {
                 $env:PATH = "$llvmBinDir;$env:PATH"
             }
-            $env:CC = "clang"
-            $env:CXX = "clang++"
+            $env:CC = "clang --target=$targetTriple"
+            $env:CXX = "clang++ --target=$targetTriple"
             $env:OLLAMA_LLVM_BIN = $llvmBinDir
             if (-not $env:OLLAMA_EXTLD) {
                 $env:OLLAMA_EXTLD = Join-Path $script:SRC_DIR "scripts\clang-extld.cmd"
             }
-            Write-Output "Using Visual Studio LLVM toolchain for CGO"
+            Write-Output "Using Visual Studio LLVM toolchain for CGO targeting $targetTriple"
             return
         }
     }
