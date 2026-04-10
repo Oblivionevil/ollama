@@ -165,11 +165,11 @@ switch ($SigningMode) {
             throw "Google signing credentials file not found: $GoogleSigningCredentialsPath"
         }
 
-        $certificateText = Get-Content -Path $OllamaCertPath -Raw
+        $certificateBase64 = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes((Resolve-Path $OllamaCertPath)))
         $credentialsText = Get-Content -Path $GoogleSigningCredentialsPath -Raw
 
         setEnvironmentVariable "KEY_CONTAINER" $KeyContainer
-        setEnvironmentVariable "OLLAMA_CERT" $certificateText
+        setEnvironmentVariable "OLLAMA_CERT_BASE64" $certificateBase64
         setEnvironmentSecret "GOOGLE_SIGNING_CREDENTIALS" $credentialsText
 
         deleteEnvironmentSecret "WINDOWS_SIGNING_PFX_BASE64"
@@ -189,6 +189,7 @@ switch ($SigningMode) {
 
         deleteEnvironmentVariable "KEY_CONTAINER"
         deleteEnvironmentVariable "OLLAMA_CERT"
+        deleteEnvironmentVariable "OLLAMA_CERT_BASE64"
         deleteEnvironmentSecret "GOOGLE_SIGNING_CREDENTIALS"
     }
 }

@@ -98,7 +98,7 @@ jobs:
 
           $hasKms = -not [string]::IsNullOrWhiteSpace('${{ secrets.GOOGLE_SIGNING_CREDENTIALS }}') -and `
             -not [string]::IsNullOrWhiteSpace('${{ vars.KEY_CONTAINER }}') -and `
-            -not [string]::IsNullOrWhiteSpace('${{ vars.OLLAMA_CERT }}')
+            -not [string]::IsNullOrWhiteSpace('${{ vars.OLLAMA_CERT_BASE64 }}')
           $hasPfx = -not [string]::IsNullOrWhiteSpace('${{ secrets.WINDOWS_SIGNING_PFX_BASE64 }}') -and `
             -not [string]::IsNullOrWhiteSpace('${{ secrets.WINDOWS_SIGNING_PFX_PASSWORD }}')
 
@@ -107,13 +107,11 @@ jobs:
           }
 
           if (-not $hasKms -and -not $hasPfx) {
-            throw 'Configure Windows release signing with either GOOGLE_SIGNING_CREDENTIALS + KEY_CONTAINER + OLLAMA_CERT, or WINDOWS_SIGNING_PFX_BASE64 + WINDOWS_SIGNING_PFX_PASSWORD.'
+            throw 'Configure Windows release signing with either GOOGLE_SIGNING_CREDENTIALS + KEY_CONTAINER + OLLAMA_CERT_BASE64, or WINDOWS_SIGNING_PFX_BASE64 + WINDOWS_SIGNING_PFX_PASSWORD.'
           }
 
           if ($hasKms) {
-            @'
-            ${{ vars.OLLAMA_CERT }}
-            '@ | Set-Content -Path ollama_inc.crt -NoNewline
+            [System.IO.File]::WriteAllBytes((Join-Path $PWD 'ollama_inc.crt'), [Convert]::FromBase64String('${{ vars.OLLAMA_CERT_BASE64 }}'))
             "mode=kms" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
             return
           }

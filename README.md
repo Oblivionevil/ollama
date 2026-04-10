@@ -84,7 +84,7 @@ This generates a local self-signed test certificate in `dist/signing/` and uses 
 
 The GitHub release workflow in `.github/workflows/release.yaml` now supports two real signing modes for Windows release packaging:
 
-- Google Cloud KMS: `GOOGLE_SIGNING_CREDENTIALS` secret plus `KEY_CONTAINER` and `OLLAMA_CERT` repository variables
+- Google Cloud KMS: `GOOGLE_SIGNING_CREDENTIALS` secret plus `KEY_CONTAINER` and `OLLAMA_CERT_BASE64` repository variables
 - PFX signing: `WINDOWS_SIGNING_PFX_BASE64` secret plus `WINDOWS_SIGNING_PFX_PASSWORD` secret
 
 The workflow publishes `.appinstaller` files against `APPINSTALLER_BASE_URI` when that repository variable is set. If it is not set, the workflow defaults to the current GitHub release asset URL for the active tag.
