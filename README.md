@@ -89,6 +89,33 @@ The GitHub release workflow in `.github/workflows/release.yaml` now supports two
 
 The workflow publishes `.appinstaller` files against `APPINSTALLER_BASE_URI` when that repository variable is set. If it is not set, the workflow defaults to the current GitHub release asset URL for the active tag.
 
+To configure the `release` environment from a logged-in machine, use `scripts/configure_release_environment.ps1`.
+
+KMS example:
+
+```powershell
+gh auth login
+powershell -ExecutionPolicy Bypass -File .\scripts\configure_release_environment.ps1 \
+	-SigningMode kms \
+	-KeyContainer "your-signing-key-container" \
+	-OllamaCertPath .\ollama_inc.crt \
+	-GoogleSigningCredentialsPath .\google-signing.json \
+	-UseWorkflowDefaultAppInstallerUri
+```
+
+PFX example with workflow dispatch:
+
+```powershell
+gh auth login
+powershell -ExecutionPolicy Bypass -File .\scripts\configure_release_environment.ps1 \
+	-SigningMode pfx \
+	-WindowsSigningPfxPath .\release-signing.pfx \
+	-WindowsSigningPfxPassword "your-pfx-password" \
+	-UseWorkflowDefaultAppInstallerUri \
+	-DispatchWorkflow \
+	-ReleaseTag v0.20.3-copilot.1
+```
+
 ## Validation
 
 Useful checks for the reduced repository:
