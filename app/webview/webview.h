@@ -435,6 +435,7 @@ void menu_handle_selection(char *item);
 
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
 #include <windows.h>
 #else
 #include <dlfcn.h>
@@ -2123,6 +2124,7 @@ using browser_engine = detail::cocoa_wkwebview_engine;
 //
 
 #define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
 #include <shlobj.h>
 #include <shlwapi.h>
 #include <stdlib.h>

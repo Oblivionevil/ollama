@@ -15,6 +15,242 @@ $script:MSIX_PACKAGE_NAME = "Ollama.Ollama"
 $script:MSIX_DISPLAY_NAME = "Ollama"
 $script:MSIX_DESCRIPTION = "Ollama desktop app"
 $script:MSIX_BACKGROUND = "#111827"
+$script:SigningMode = "none"
+
+function findVisualStudioDeveloperCommand {
+    $patterns = @(
+        "C:\Program Files\Microsoft Visual Studio\*\*\Common7\Tools\VsDevCmd.bat",
+        "C:\Program Files (x86)\Microsoft Visual Studio\*\*\Common7\Tools\VsDevCmd.bat"
+    )
+
+    foreach ($pattern in $patterns) {
+        $match = Get-ChildItem -Path $pattern -File -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -First 1
+        if ($match) {
+            return $match.FullName
+        }
+    }
+
+    return $null
+}
+
+function findVisualStudioLlvmBinDir {
+    $patterns = @(
+        "C:\Program Files\Microsoft Visual Studio\*\*\VC\Tools\Llvm\x64\bin",
+        "C:\Program Files (x86)\Microsoft Visual Studio\*\*\VC\Tools\Llvm\x64\bin"
+    )
+
+    foreach ($pattern in $patterns) {
+        $match = Get-ChildItem -Path $pattern -Directory -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -First 1
+        if ($match) {
+            return $match.FullName
+        }
+    }
+
+    return $null
+}
+
+function importCmdEnvironment {
+    param(
+        [string]$CommandPath,
+        [string[]]$Arguments = @()
+    )
+
+    if (-not $CommandPath) {
+        return $false
+    }
+
+    $argumentString = ($Arguments | Where-Object { $_ }) -join ' '
+    $commandLine = if ($argumentString) {
+        "`"$CommandPath`" $argumentString >nul && set"
+    } else {
+        "`"$CommandPath`" >nul && set"
+    }
+
+    $environmentLines = & cmd.exe /d /s /c $commandLine
+    if ($LASTEXITCODE -ne 0) {
+        return $false
+    }
+
+    foreach ($line in $environmentLines) {
+        if ($line -match '^(.*?)=(.*)$') {
+            [System.Environment]::SetEnvironmentVariable($matches[1], $matches[2], 'Process')
+        }
+    }
+
+    return $true
+}
+
+function enableLocalTestSigning {
+    if ($env:OLLAMA_LOCAL_TEST_SIGNING -ne "1") {
+        return
+    }
+
+    $signingDir = Join-Path $script:SRC_DIR "dist\signing"
+    $pfxPath = Join-Path $signingDir "ollama-local-test.pfx"
+    $cerPath = Join-Path $signingDir "ollama-local-test.cer"
+    $passwordPath = Join-Path $signingDir "ollama-local-test.password.txt"
+    $subject = if ($env:OLLAMA_LOCAL_TEST_CERT_SUBJECT) { $env:OLLAMA_LOCAL_TEST_CERT_SUBJECT } else { "CN=Ollama Local Test" }
+
+    mkdir -Force -path $signingDir | Out-Null
+
+    $password = if ($env:OLLAMA_LOCAL_TEST_CERT_PASSWORD) {
+        $env:OLLAMA_LOCAL_TEST_CERT_PASSWORD
+    } elseif (Test-Path $passwordPath) {
+        (Get-Content -Path $passwordPath -Raw).Trim()
+    } else {
+        [guid]::NewGuid().ToString('N')
+    }
+
+    if (-not (Test-Path $pfxPath) -or -not (Test-Path $cerPath)) {
+        $securePassword = ConvertTo-SecureString -String $password -AsPlainText -Force
+        $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject $subject -CertStoreLocation "Cert:\CurrentUser\My" -KeyExportPolicy Exportable -HashAlgorithm SHA256 -KeyAlgorithm RSA -KeyLength 2048 -NotAfter (Get-Date).AddYears(2)
+        Export-PfxCertificate -Cert $cert -FilePath $pfxPath -Password $securePassword | Out-Null
+        Export-Certificate -Cert $cert -FilePath $cerPath | Out-Null
+        Set-Content -Path $passwordPath -Value $password -Encoding ascii
+        Write-Output "Generated local test signing certificate at $pfxPath"
+        Write-Output "Exported public certificate at $cerPath"
+    }
+
+    $env:SIGN_PFX = $pfxPath
+    $env:SIGN_CERT = $cerPath
+    $env:SIGN_PFX_PASSWORD = $password
+    if (-not $env:APPINSTALLER_BASE_URI) {
+        $env:APPINSTALLER_BASE_URI = "https://example.invalid/ollama-local"
+    }
+}
+
+function configureWindowsCgoToolchain {
+    if ($env:CC) {
+        return
+    }
+
+    $vsDevCmd = findVisualStudioDeveloperCommand
+    $llvmBinDir = findVisualStudioLlvmBinDir
+    if ($vsDevCmd -and $llvmBinDir) {
+        $vsArch = switch ($script:TARGET_ARCH) {
+            "amd64" { "x64" }
+            "arm64" { "arm64" }
+            default { $null }
+        }
+
+        if ($vsArch -and (importCmdEnvironment $vsDevCmd @("-arch=$vsArch"))) {
+            if ($env:PATH -notmatch [regex]::Escape($llvmBinDir)) {
+                $env:PATH = "$llvmBinDir;$env:PATH"
+            }
+            $env:CC = "clang"
+            $env:CXX = "clang++"
+            $env:OLLAMA_LLVM_BIN = $llvmBinDir
+            if (-not $env:OLLAMA_EXTLD) {
+                $env:OLLAMA_EXTLD = Join-Path $script:SRC_DIR "scripts\clang-extld.cmd"
+            }
+            Write-Output "Using Visual Studio LLVM toolchain for CGO"
+            return
+        }
+    }
+
+    if (Get-Command zig -ErrorAction SilentlyContinue) {
+        $env:CC = "zig cc"
+        $env:CXX = "zig c++"
+        Write-Output "Using zig as the C/C++ compiler for CGO"
+    }
+}
+
+function loadSigningCertificate {
+    if ($script:OLLAMA_PFX -and (Test-Path $script:OLLAMA_PFX)) {
+        return New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($script:OLLAMA_PFX, $script:OLLAMA_PFX_PASSWORD)
+    }
+
+    if ($script:OLLAMA_CERT -and (Test-Path $script:OLLAMA_CERT)) {
+        return [System.Security.Cryptography.X509Certificates.X509Certificate2]::CreateFromCertFile($script:OLLAMA_CERT)
+    }
+
+    return $null
+}
+
+function getSignToolArguments {
+    param(
+        [switch]$ForMsix
+    )
+
+    if ($script:SigningMode -eq "kms") {
+        $args = @("sign", "/v", "/fd", "sha256")
+        if ($ForMsix) {
+            $args += @("/td", "sha256", "/tr", "http://timestamp.digicert.com")
+        } else {
+            $args += @("/t", "http://timestamp.digicert.com")
+        }
+        $args += @("/f", "${script:OLLAMA_CERT}", "/csp", "Google Cloud KMS Provider", "/kc", "${env:KEY_CONTAINER}")
+        return $args
+    }
+
+    if ($script:SigningMode -eq "pfx") {
+        $args = @("sign", "/v", "/fd", "sha256", "/f", "${script:OLLAMA_PFX}")
+        if ($script:OLLAMA_PFX_PASSWORD) {
+            $args += @("/p", "${script:OLLAMA_PFX_PASSWORD}")
+        }
+        if ($ForMsix) {
+            $args += @("/td", "sha256")
+        }
+        if ($env:SIGN_TIMESTAMP_URL) {
+            if ($ForMsix) {
+                $args += @("/tr", "${env:SIGN_TIMESTAMP_URL}")
+            } else {
+                $args += @("/t", "${env:SIGN_TIMESTAMP_URL}")
+            }
+        }
+        return $args
+    }
+
+    return @()
+}
+
+function findWindowsSdkIncludeDir {
+    param(
+        [string]$Subdirectory,
+        [string]$RequiredFile = $null
+    )
+
+    $patterns = @(
+        "C:\Program Files (x86)\Windows Kits\10\Include\*\${Subdirectory}",
+        "C:\Program Files\Windows Kits\10\Include\*\${Subdirectory}"
+    )
+
+    foreach ($pattern in $patterns) {
+        $matches = Get-ChildItem -Path $pattern -Directory -ErrorAction SilentlyContinue | Sort-Object FullName -Descending
+        foreach ($match in $matches) {
+            if (-not $RequiredFile -or (Test-Path (Join-Path $match.FullName $RequiredFile))) {
+                return $match.FullName
+            }
+        }
+    }
+
+    return $null
+}
+
+function getCompilerFriendlyPath {
+    param(
+        [string]$Path
+    )
+
+    if (-not $Path -or $Path -notmatch '\s') {
+        return $Path
+    }
+
+    try {
+        $fileSystem = New-Object -ComObject Scripting.FileSystemObject
+        if (Test-Path $Path -PathType Container) {
+            $shortPath = $fileSystem.GetFolder($Path).ShortPath
+        } else {
+            $shortPath = $fileSystem.GetFile($Path).ShortPath
+        }
+        if ($shortPath) {
+            return $shortPath
+        }
+    } catch {
+    }
+
+    return $Path
+}
 
 function checkEnv {
     if ($null -ne $env:ARCH ) {
@@ -58,25 +294,40 @@ function checkEnv {
         $script:HIP_PATH=$env:HIP_PATH
     }
     
-    $inoSetup=(get-item "C:\Program Files*\Inno Setup*\")
-    if ($inoSetup.length -gt 0) {
-        $script:INNO_SETUP_DIR=$inoSetup[0]
+    $innoSetupRoots = @(
+        "C:\Program Files\Inno Setup*",
+        "C:\Program Files (x86)\Inno Setup*",
+        (Join-Path $env:LOCALAPPDATA "Programs\Inno Setup*")
+    )
+    foreach ($pattern in $innoSetupRoots) {
+        $inoSetup = Get-ChildItem -Path $pattern -Directory -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -First 1
+        if ($inoSetup) {
+            $script:INNO_SETUP_DIR = $inoSetup.FullName
+            break
+        }
     }
 
     $script:DIST_DIR="${script:SRC_DIR}\dist\windows-${script:TARGET_ARCH}"
     $env:CGO_ENABLED="1"
-	if (-not $env:CC) {
-		if (Get-Command zig -ErrorAction SilentlyContinue) {
-			$env:CC = "zig cc"
-			$env:CXX = "zig c++"
-			Write-Output "Using zig as the C/C++ compiler for CGO"
-		}
-	}
+    configureWindowsCgoToolchain
     if (-not $env:CGO_CFLAGS) {
         $env:CGO_CFLAGS = "-O3"
     }
     if (-not $env:CGO_CXXFLAGS) {
         $env:CGO_CXXFLAGS = "-O3"
+    }
+    $winRtIncludeDir = findWindowsSdkIncludeDir "winrt" "EventToken.h"
+    if ($winRtIncludeDir) {
+        $compilerWinRtIncludeDir = getCompilerFriendlyPath $winRtIncludeDir
+        if ($env:CGO_CFLAGS -notmatch [regex]::Escape($compilerWinRtIncludeDir)) {
+            $env:CGO_CFLAGS = "$($env:CGO_CFLAGS) -I$compilerWinRtIncludeDir"
+        }
+        if ($env:CGO_CXXFLAGS -notmatch [regex]::Escape($compilerWinRtIncludeDir)) {
+            $env:CGO_CXXFLAGS = "$($env:CGO_CXXFLAGS) -I$compilerWinRtIncludeDir"
+        }
+        Write-Output "Using Windows SDK WinRT headers from $winRtIncludeDir"
+    } else {
+        Write-Output "WARNING: unable to locate Windows SDK WinRT headers; WebView2 builds may fail"
     }
     Write-Output "Checking version"
     if (!$env:VERSION) {
@@ -96,21 +347,44 @@ function checkEnv {
     }
     Write-Output "Building Ollama $script:VERSION with package version $script:PKG_VERSION"
 
-    # Note: Windows Kits 10 signtool crashes with GCP's plugin
+    enableLocalTestSigning
+
     if ($null -eq $env:SIGN_TOOL) {
-        ${script:SignTool}="C:\Program Files (x86)\Windows Kits\8.1\bin\x64\signtool.exe"
+        ${script:SignTool}=findWindowsSdkTool "signtool.exe"
     } else {
         ${script:SignTool}=${env:SIGN_TOOL}
     }
+    if (${script:SignTool}) {
+        Write-Output "Using SignTool at ${script:SignTool}"
+    } else {
+        Write-Output "WARNING: unable to locate signtool.exe - signed artifacts cannot be produced"
+    }
+    $script:SigningMode = "none"
+    $script:OLLAMA_CERT = $null
+    $script:OLLAMA_PFX = $null
+    $script:OLLAMA_PFX_PASSWORD = $null
     if ("${env:KEY_CONTAINER}") {
         if (Test-Path "${script:SRC_DIR}\ollama_inc.crt") {
             ${script:OLLAMA_CERT}=$(resolve-path "${script:SRC_DIR}\ollama_inc.crt")
-            Write-host "Code signing enabled"
+            $script:SigningMode = "kms"
+            Write-host "Code signing enabled via Google Cloud KMS"
         } else {
             Write-Output "WARNING: KEY_CONTAINER is set but ollama_inc.crt not found at ${script:SRC_DIR}\ollama_inc.crt - code signing disabled"
         }
+    } elseif ($env:SIGN_PFX) {
+        if (Test-Path $env:SIGN_PFX) {
+            $script:OLLAMA_PFX = (Resolve-Path $env:SIGN_PFX).Path
+            $script:OLLAMA_PFX_PASSWORD = $env:SIGN_PFX_PASSWORD
+            if ($env:SIGN_CERT -and (Test-Path $env:SIGN_CERT)) {
+                $script:OLLAMA_CERT = (Resolve-Path $env:SIGN_CERT).Path
+            }
+            $script:SigningMode = "pfx"
+            Write-Output "Code signing enabled via PFX certificate"
+        } else {
+            Write-Output "WARNING: SIGN_PFX is set but the file was not found - code signing disabled"
+        }
     } else {
-        Write-Output "Code signing disabled - please set KEY_CONTAINERS to sign and copy ollama_inc.crt to the top of the source tree"
+        Write-Output "Code signing disabled - set KEY_CONTAINER with ollama_inc.crt, or SIGN_PFX/SIGN_PFX_PASSWORD, or OLLAMA_LOCAL_TEST_SIGNING=1"
     }
     if ($env:OLLAMA_BUILD_PARALLEL) {
         $script:JOBS=[int]$env:OLLAMA_BUILD_PARALLEL
@@ -132,7 +406,7 @@ function checkEnv {
 }
 
 function signingEnabled {
-    return ("${env:KEY_CONTAINER}" -and "${script:OLLAMA_CERT}")
+    return ($script:SigningMode -ne "none")
 }
 
 function requireCodeSigning {
@@ -141,7 +415,12 @@ function requireCodeSigning {
     )
 
     if (-not (signingEnabled)) {
-        Write-Output "ERROR: ${artifactName} requires code signing. Set KEY_CONTAINER and place ollama_inc.crt at the repository root."
+        Write-Output "ERROR: ${artifactName} requires code signing. Configure KEY_CONTAINER with ollama_inc.crt, or SIGN_PFX/SIGN_PFX_PASSWORD, or set OLLAMA_LOCAL_TEST_SIGNING=1."
+        exit 1
+    }
+
+    if (-not ${script:SignTool}) {
+        Write-Output "ERROR: ${artifactName} requires signtool.exe, but it could not be located. Set SIGN_TOOL to override the path."
         exit 1
     }
 }
@@ -156,9 +435,13 @@ function invokeSignTool {
         return
     }
 
-    & "${script:SignTool}" sign /v /fd sha256 /t http://timestamp.digicert.com /f "${script:OLLAMA_CERT}" `
-        /csp "Google Cloud KMS Provider" /kc ${env:KEY_CONTAINER} `
-        $targets
+    $arguments = getSignToolArguments
+    if ($arguments.Count -eq 0) {
+        Write-Output "ERROR: signing requested but no signing arguments are available"
+        exit 1
+    }
+
+    & "${script:SignTool}" @arguments $targets | ForEach-Object { Write-Host $_ }
     if ($LASTEXITCODE -ne 0) { exit($LASTEXITCODE)}
 }
 
@@ -172,9 +455,13 @@ function invokeMsixSignTool {
         return
     }
 
-    & "${script:SignTool}" sign /v /fd sha256 /td sha256 /tr http://timestamp.digicert.com /f "${script:OLLAMA_CERT}" `
-        /csp "Google Cloud KMS Provider" /kc ${env:KEY_CONTAINER} `
-        $targets
+    $arguments = getSignToolArguments -ForMsix
+    if ($arguments.Count -eq 0) {
+        Write-Output "ERROR: MSIX signing requested but no signing arguments are available"
+        exit 1
+    }
+
+    & "${script:SignTool}" @arguments $targets | ForEach-Object { Write-Host $_ }
     if ($LASTEXITCODE -ne 0) { exit($LASTEXITCODE)}
 }
 
@@ -234,8 +521,9 @@ function msixPublisher {
         return $env:APPX_PUBLISHER
     }
 
-    if ($script:OLLAMA_CERT -and (Test-Path $script:OLLAMA_CERT)) {
-        return ([System.Security.Cryptography.X509Certificates.X509Certificate2]::CreateFromCertFile($script:OLLAMA_CERT)).Subject
+    $certificate = loadSigningCertificate
+    if ($certificate) {
+        return $certificate.Subject
     }
 
     Write-Output "ERROR: unable to determine MSIX publisher. Set APPX_PUBLISHER or enable code signing."
@@ -253,6 +541,10 @@ function xmlEscape {
 function appInstallerBaseUri {
     if ($env:APPINSTALLER_BASE_URI) {
         return $env:APPINSTALLER_BASE_URI.TrimEnd('/')
+    }
+
+    if ($env:OLLAMA_LOCAL_TEST_SIGNING -eq "1") {
+        return "https://example.invalid/ollama-local"
     }
 
     if ($env:GITHUB_REPOSITORY -and $script:VERSION) {
@@ -305,8 +597,21 @@ function writeMsixAssets {
 
     mkdir -Force -path $AssetDir | Out-Null
     $iconPath = Join-Path $script:SRC_DIR "app\assets\app.ico"
-    $icon = New-Object System.Drawing.Icon($iconPath, 256, 256)
-    $image = $icon.ToBitmap()
+    $icon = $null
+    $iconStream = $null
+    $image = $null
+    try {
+        $image = [System.Drawing.Image]::FromFile($iconPath)
+    } catch {
+        try {
+            $iconStream = [System.IO.File]::OpenRead($iconPath)
+            $icon = New-Object System.Drawing.Icon($iconStream)
+            $image = $icon.ToBitmap()
+        } catch {
+            Write-Output "ERROR: unable to load MSIX icon source from ${iconPath}"
+            exit 1
+        }
+    }
     try {
         saveMsixPng $image 44 44 (Join-Path $AssetDir "Square44x44Logo.png") 0.90
         saveMsixPng $image 50 50 (Join-Path $AssetDir "StoreLogo.png") 0.90
@@ -316,8 +621,15 @@ function writeMsixAssets {
         saveMsixPng $image 310 310 (Join-Path $AssetDir "Square310x310Logo.png") 0.72
         saveMsixPng $image 620 300 (Join-Path $AssetDir "SplashScreen.png") 0.48
     } finally {
-        $image.Dispose()
-        $icon.Dispose()
+        if ($image) {
+            $image.Dispose()
+        }
+        if ($icon) {
+            $icon.Dispose()
+        }
+        if ($iconStream) {
+            $iconStream.Dispose()
+        }
     }
 }
 
@@ -328,9 +640,14 @@ function copyVcRuntimeLibraries {
     )
 
     $msvcArch = msixProcessorArchitecture $Arch
-    $patterns = @(
-        "C:\Program Files\Microsoft Visual Studio\2022\*\VC\Redist\MSVC\*\${msvcArch}\Microsoft.VC*.CRT\*.dll",
-        "C:\Program Files (x86)\Microsoft Visual Studio\2022\*\VC\Redist\MSVC\*\${msvcArch}\Microsoft.VC*.CRT\*.dll"
+    $patterns = @()
+    if ($env:VCToolsRedistDir) {
+        $patterns += (Join-Path $env:VCToolsRedistDir "${msvcArch}\Microsoft.VC*.CRT\*.dll")
+    }
+    $patterns += @(
+        "C:\Program Files\Microsoft Visual Studio\*\*\VC\Redist\MSVC\*\${msvcArch}\Microsoft.VC*.CRT\*.dll",
+        "C:\Program Files (x86)\Microsoft Visual Studio\*\*\VC\Redist\MSVC\*\${msvcArch}\Microsoft.VC*.CRT\*.dll",
+        (Join-Path $env:LOCALAPPDATA "Programs\Microsoft Visual Studio\*\*\VC\Redist\MSVC\*\${msvcArch}\Microsoft.VC*.CRT\*.dll")
     )
 
     $copied = @{}
@@ -345,9 +662,9 @@ function copyVcRuntimeLibraries {
     }
 
     if ($copied.Count -eq 0) {
-        Write-Output "WARNING: no VC runtime DLLs found for ${Arch}; the packaged app may require the VC++ runtime to already be installed."
+        Write-Host "WARNING: no VC runtime DLLs found for ${Arch}; the packaged app may require the VC++ runtime to already be installed."
     } else {
-        Write-Output "Bundled VC runtime DLLs for ${Arch}: $($copied.Keys -join ', ')"
+        Write-Host "Bundled VC runtime DLLs for ${Arch}: $($copied.Keys -join ', ')"
     }
 }
 
@@ -407,8 +724,8 @@ function stageMsixPackage {
     writeMsixManifest $Arch $packageRoot $Publisher $PackageVersion
 
     Remove-Item -ea 0 -Force $msixPath
-    Write-Output "Packing signed MSIX for ${Arch}: ${msixPath}"
-    & $MakeAppxTool pack /o /h SHA256 /d $packageRoot /p $msixPath
+    Write-Host "Packing signed MSIX for ${Arch}: ${msixPath}"
+    & $MakeAppxTool pack /o /h SHA256 /d $packageRoot /p $msixPath | ForEach-Object { Write-Host $_ }
     if ($LASTEXITCODE -ne 0) { exit($LASTEXITCODE)}
 
     invokeMsixSignTool @($msixPath)
@@ -433,8 +750,8 @@ function buildMsixBundle {
     }
 
     Remove-Item -ea 0 -Force $bundlePath
-    Write-Output "Packing signed MSIX bundle: ${bundlePath}"
-    & $MakeAppxTool bundle /o /bv $PackageVersion /d $bundleInputDir /p $bundlePath
+    Write-Host "Packing signed MSIX bundle: ${bundlePath}"
+    & $MakeAppxTool bundle /o /bv $PackageVersion /d $bundleInputDir /p $bundlePath | ForEach-Object { Write-Host $_ }
     if ($LASTEXITCODE -ne 0) { exit($LASTEXITCODE)}
 
     invokeMsixSignTool @($bundlePath)
@@ -734,6 +1051,12 @@ function ollama {
 function app {
     Write-Output "Building Ollama App $script:VERSION with package version $script:PKG_VERSION"
 
+    $appLdflags = "-s -w -H windowsgui -X=github.com/ollama/ollama/app/version.Version=$script:VERSION"
+    if ($env:OLLAMA_EXTLD) {
+        $appLdflags += " -extld=$($env:OLLAMA_EXTLD)"
+        Write-Output "Using custom external linker for app build: $($env:OLLAMA_EXTLD)"
+    }
+
     if (!(Get-Command npm -ErrorAction SilentlyContinue)) {
         Write-Output "npm is not installed. Please install Node.js and npm first:"
         Write-Output "   Visit: https://nodejs.org/"
@@ -787,7 +1110,7 @@ function app {
     } else {
         Write-Output "Skipping go generate for the desktop app (set OLLAMA_APP_GENERATE=1 to refresh generated files)"
     }
-	& go build -trimpath -ldflags "-s -w -H windowsgui -X=github.com/ollama/ollama/app/version.Version=$script:VERSION" -o .\dist\windows-ollama-app-${script:ARCH}.exe ./app/cmd/app/
+    & go build -trimpath -ldflags $appLdflags -o .\dist\windows-ollama-app-${script:ARCH}.exe ./app/cmd/app/
     if ($LASTEXITCODE -ne 0) { exit($LASTEXITCODE)}
 
     $packageDir = Join-Path $script:SRC_DIR "dist\windows-${script:ARCH}"

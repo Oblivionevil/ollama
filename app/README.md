@@ -49,13 +49,14 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build_windows.ps1 app
 ```
 
 The staged desktop package is written to `dist/windows-<arch>`.
+The build script auto-detects the Visual Studio LLVM toolchain when present and copies the required VC++ runtime DLLs into the package.
 
 ### Signed installer and App Installer packages
 
 Requirements:
 
 - Windows SDK with `MakeAppx.exe`
-- signing configured through `KEY_CONTAINER` and `ollama_inc.crt`
+- signing configured through `KEY_CONTAINER` and `ollama_inc.crt`, or through `SIGN_PFX` and `SIGN_PFX_PASSWORD`
 - optional `APPINSTALLER_BASE_URI` for hosted `.appinstaller` manifests
 
 ```powershell
@@ -65,3 +66,12 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build_windows.ps1 app sign in
 ```
 
 The MSIX/App Installer path is per-user, like the desktop installer, and packages only the desktop app payload.
+
+For local test validation of the MSIX/App Installer path without release signing:
+
+```powershell
+$env:OLLAMA_LOCAL_TEST_SIGNING = "1"
+powershell -ExecutionPolicy Bypass -File .\scripts\build_windows.ps1 appinstaller
+```
+
+This creates a self-signed test certificate under `dist/signing/` and signs the generated MSIX with it.

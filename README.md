@@ -51,6 +51,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build_windows.ps1 app
 ```
 
 The build script stages the packaged desktop app under `dist/windows-<arch>`.
+On Windows it now prefers the Visual Studio LLVM toolchain automatically when available and bundles the VC++ runtime DLLs into the staged package.
 
 ## Packaging
 
@@ -62,10 +63,21 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build_windows.ps1 app sign in
 
 This emits the Windows desktop binaries plus signed installer artifacts when signing is configured.
 
+For local MSIX and `.appinstaller` validation without the release signing setup:
+
+```powershell
+$env:OLLAMA_LOCAL_TEST_SIGNING = "1"
+powershell -ExecutionPolicy Bypass -File .\scripts\build_windows.ps1 appinstaller
+```
+
+This generates a local self-signed test certificate in `dist/signing/` and uses a placeholder `APPINSTALLER_BASE_URI` unless one is already set.
+
 ### Signing inputs
 
 - `KEY_CONTAINER`
 - `ollama_inc.crt`
+- Optional: `SIGN_PFX` and `SIGN_PFX_PASSWORD` for PFX-based signing
+- Optional: `OLLAMA_LOCAL_TEST_SIGNING=1` to generate a local self-signed test certificate for MSIX/AppInstaller validation
 - Optional: `APPINSTALLER_BASE_URI` for `.appinstaller` publishing
 
 ## Validation
