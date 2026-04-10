@@ -204,6 +204,53 @@ function getSignToolArguments {
     return @()
 }
 
+function getInnoSetupSignToolDefinition {
+    if ($script:SigningMode -eq "kms") {
+        return (@(
+            "`$q${script:SignTool}`$q",
+            "sign",
+            "/fd",
+            "sha256",
+            "/t",
+            "http://timestamp.digicert.com",
+            "/f",
+            "`$q${script:OLLAMA_CERT}`$q",
+            "/csp",
+            "`$qGoogle Cloud KMS Provider`$q",
+            "/kc",
+            "${env:KEY_CONTAINER}",
+            "`$f"
+        ) -join ' ')
+    }
+
+    if ($script:SigningMode -eq "pfx") {
+        $parts = @(
+            "`$q${script:SignTool}`$q",
+            "sign",
+            "/fd",
+            "sha256",
+            "/f",
+            "`$q${script:OLLAMA_PFX}`$q"
+        )
+        if ($script:OLLAMA_PFX_PASSWORD) {
+            $parts += @(
+                "/p",
+                "`$q${script:OLLAMA_PFX_PASSWORD}`$q"
+            )
+        }
+        if ($env:SIGN_TIMESTAMP_URL) {
+            $parts += @(
+                "/t",
+                "${env:SIGN_TIMESTAMP_URL}"
+            )
+        }
+        $parts += "`$f"
+        return ($parts -join ' ')
+    }
+
+    return $null
+}
+
 function findWindowsSdkIncludeDir {
     param(
         [string]$Subdirectory,
@@ -1155,7 +1202,12 @@ function installer {
     cd "${script:SRC_DIR}\app"
     $env:PKG_VERSION=$script:PKG_VERSION
     if (signingEnabled) {
-        & "${script:INNO_SETUP_DIR}\ISCC.exe" /DARCH=$script:TARGET_ARCH /SMySignTool="${script:SignTool} sign /fd sha256 /t http://timestamp.digicert.com /f ${script:OLLAMA_CERT} /csp `$qGoogle Cloud KMS Provider`$q /kc ${env:KEY_CONTAINER} `$f" .\ollama.iss
+        $signToolDefinition = getInnoSetupSignToolDefinition
+        if (-not $signToolDefinition) {
+            Write-Output "ERROR: installer signing is enabled, but no Inno Setup signing definition could be generated"
+            exit 1
+        }
+        & "${script:INNO_SETUP_DIR}\ISCC.exe" /DARCH=$script:TARGET_ARCH "/SMySignTool=$signToolDefinition" .\ollama.iss
     } else {
         & "${script:INNO_SETUP_DIR}\ISCC.exe" /DARCH=$script:TARGET_ARCH .\ollama.iss
     }

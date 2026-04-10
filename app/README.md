@@ -75,3 +75,5 @@ powershell -ExecutionPolicy Bypass -File .\scripts\build_windows.ps1 appinstalle
 ```
 
 This creates a self-signed test certificate under `dist/signing/` and signs the generated MSIX with it.
+
+For GitHub release packaging, `.github/workflows/release.yaml` accepts either the existing KMS signing configuration or a PFX provided through `WINDOWS_SIGNING_PFX_BASE64` and `WINDOWS_SIGNING_PFX_PASSWORD`. The workflow uses `APPINSTALLER_BASE_URI` when configured, and otherwise points the generated `.appinstaller` manifest at the GitHub release asset URL for the current tag.

@@ -75,6 +75,8 @@ jobs:
     env:
       VERSION: ${{ needs.setup.outputs.version }}
       KEY_CONTAINER: ${{ vars.KEY_CONTAINER }}
+      APPINSTALLER_BASE_URI: ${{ vars.APPINSTALLER_BASE_URI != '' && vars.APPINSTALLER_BASE_URI || format('https://github.com/{0}/releases/download/{1}', github.repository, needs.setup.outputs.release_tag) }}
+      SIGN_TIMESTAMP_URL: ${{ vars.SIGN_TIMESTAMP_URL != '' && vars.SIGN_TIMESTAMP_URL || 'http://timestamp.digicert.com' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -88,23 +90,61 @@ jobs:
           pattern: build-windows-*
           path: dist
           merge-multiple: true
+      - name: Configure signing inputs
+        id: signing
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $hasKms = -not [string]::IsNullOrWhiteSpace('${{ secrets.GOOGLE_SIGNING_CREDENTIALS }}') -and `
+            -not [string]::IsNullOrWhiteSpace('${{ vars.KEY_CONTAINER }}') -and `
+            -not [string]::IsNullOrWhiteSpace('${{ vars.OLLAMA_CERT }}')
+          $hasPfx = -not [string]::IsNullOrWhiteSpace('${{ secrets.WINDOWS_SIGNING_PFX_BASE64 }}') -and `
+            -not [string]::IsNullOrWhiteSpace('${{ secrets.WINDOWS_SIGNING_PFX_PASSWORD }}')
+
+          if ($hasKms -and $hasPfx) {
+            throw 'Configure only one Windows signing mode for the release job: KMS or PFX.'
+          }
+
+          if (-not $hasKms -and -not $hasPfx) {
+            throw 'Configure Windows release signing with either GOOGLE_SIGNING_CREDENTIALS + KEY_CONTAINER + OLLAMA_CERT, or WINDOWS_SIGNING_PFX_BASE64 + WINDOWS_SIGNING_PFX_PASSWORD.'
+          }
+
+          if ($hasKms) {
+            @'
+${{ vars.OLLAMA_CERT }}
+'@ | Set-Content -Path ollama_inc.crt -NoNewline
+            "mode=kms" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+            return
+          }
+
+          $pfxPath = Join-Path $env:RUNNER_TEMP 'ollama-release-signing.pfx'
+          [System.IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String('${{ secrets.WINDOWS_SIGNING_PFX_BASE64 }}'))
+          "SIGN_PFX=$pfxPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          @(
+            'SIGN_PFX_PASSWORD<<EOF',
+            '${{ secrets.WINDOWS_SIGNING_PFX_PASSWORD }}',
+            'EOF'
+          ) | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "mode=pfx" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
       - name: Install packaging tools
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           choco install -y --no-progress innosetup
       - uses: google-github-actions/auth@v2
+        if: ${{ steps.signing.outputs.mode == 'kms' }}
         with:
           project_id: ollama
           credentials_json: ${{ secrets.GOOGLE_SIGNING_CREDENTIALS }}
       - name: Install signing integration
+        if: ${{ steps.signing.outputs.mode == 'kms' }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           Invoke-WebRequest -Uri 'https://github.com/GoogleCloudPlatform/kms-integrations/releases/download/cng-v1.0/kmscng-1.0-windows-amd64.zip' -OutFile "${{ runner.temp }}\plugin.zip"
           Expand-Archive -Path "${{ runner.temp }}\plugin.zip" -DestinationPath "${{ runner.temp }}\plugin\"
           & "${{ runner.temp }}\plugin\*\kmscng.msi" /quiet
-          echo "${{ vars.OLLAMA_CERT }}" > ollama_inc.crt
       - name: Package signed artifacts
         shell: pwsh
         run: |
