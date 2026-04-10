@@ -31,10 +31,10 @@ jobs:
       matrix:
         include:
           - arch: amd64
-            runner: windows
+            runner: windows-2022
             llvmarch: x86_64
           - arch: arm64
-            runner: windows-arm64
+            runner: windows-11-arm
             llvmarch: aarch64
     runs-on: ${{ matrix.runner }}
     env:
@@ -70,7 +70,7 @@ jobs:
 
   windows-package:
     needs: [setup, windows-build]
-    runs-on: windows
+    runs-on: windows-2022
     environment: release
     env:
       VERSION: ${{ needs.setup.outputs.version }}
