@@ -9,11 +9,13 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/app/store"
@@ -371,6 +373,84 @@ func TestAuthenticationMiddleware(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestCopilotLocalSignInURLIncludesDesktopToken(t *testing.T) {
+	server := &Server{Token: "desktop-token"}
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:12345/api/me", nil)
+
+	signInURL := server.copilotLocalSignInURL(req, "flow-123")
+	parsed, err := url.Parse(signInURL)
+	if err != nil {
+		t.Fatalf("Parse(signInURL) error = %v", err)
+	}
+
+	if parsed.Scheme != "http" {
+		t.Fatalf("scheme = %q, want http", parsed.Scheme)
+	}
+	if parsed.Host != "127.0.0.1:12345" {
+		t.Fatalf("host = %q, want 127.0.0.1:12345", parsed.Host)
+	}
+	if parsed.Path != "/auth/github" {
+		t.Fatalf("path = %q, want /auth/github", parsed.Path)
+	}
+	if got := parsed.Query().Get("id"); got != "flow-123" {
+		t.Fatalf("id = %q, want flow-123", got)
+	}
+	if got := parsed.Query().Get("token"); got != "desktop-token" {
+		t.Fatalf("token = %q, want desktop-token", got)
+	}
+}
+
+func TestAuthGithubAcceptsOneTimeDesktopToken(t *testing.T) {
+	server := &Server{
+		Token: "desktop-token",
+		copilotFlows: map[string]*copilotDeviceFlow{
+			"flow-123": {
+				ID:              "flow-123",
+				UserCode:        "ABCD-EFGH",
+				VerificationURI: "https://github.com/login/device",
+				ExpiresAt:       time.Now().Add(time.Hour),
+				Status:          "pending",
+			},
+		},
+	}
+
+	handler := server.Handler()
+	firstReq := httptest.NewRequest(http.MethodGet, "/auth/github?id=flow-123&token=desktop-token", nil)
+	firstResp := httptest.NewRecorder()
+
+	handler.ServeHTTP(firstResp, firstReq)
+
+	if firstResp.Code != http.StatusFound {
+		t.Fatalf("first response status = %d, want %d", firstResp.Code, http.StatusFound)
+	}
+	if location := firstResp.Header().Get("Location"); location != "/auth/github?id=flow-123" {
+		t.Fatalf("location = %q, want %q", location, "/auth/github?id=flow-123")
+	}
+
+	result := firstResp.Result()
+	defer result.Body.Close()
+	cookies := result.Cookies()
+	if len(cookies) != 1 {
+		t.Fatalf("cookies = %d, want 1", len(cookies))
+	}
+	if cookies[0].Name != "token" || cookies[0].Value != "desktop-token" {
+		t.Fatalf("cookie = %+v, want desktop token cookie", cookies[0])
+	}
+
+	secondReq := httptest.NewRequest(http.MethodGet, "/auth/github?id=flow-123", nil)
+	secondReq.AddCookie(cookies[0])
+	secondResp := httptest.NewRecorder()
+
+	handler.ServeHTTP(secondResp, secondReq)
+
+	if secondResp.Code != http.StatusOK {
+		t.Fatalf("second response status = %d, want %d", secondResp.Code, http.StatusOK)
+	}
+	if !strings.Contains(secondResp.Body.String(), "ABCD-EFGH") {
+		t.Fatalf("body = %q, want device code", secondResp.Body.String())
 	}
 }
 

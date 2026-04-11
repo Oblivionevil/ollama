@@ -373,6 +373,9 @@ func (s *Server) copilotLocalSignInURL(r *http.Request, flowID string) string {
 	}
 	query := endpoint.Query()
 	query.Set("id", flowID)
+	if s.Token != "" {
+		query.Set("token", s.Token)
+	}
 	endpoint.RawQuery = query.Encode()
 	return endpoint.String()
 }

@@ -151,6 +151,28 @@ func (s *Server) Handler() http.Handler {
 
 			// Don't check for token in development mode
 			if !s.Dev {
+				if token := r.URL.Query().Get("token"); token != "" && token == s.Token {
+					query := r.URL.Query()
+					query.Del("token")
+
+					redirectURL := *r.URL
+					redirectURL.RawQuery = query.Encode()
+					location := redirectURL.String()
+					if location == "" {
+						location = "/"
+					}
+
+					http.SetCookie(w, &http.Cookie{
+						Name:     "token",
+						Value:    s.Token,
+						Path:     "/",
+						HttpOnly: true,
+						SameSite: http.SameSiteStrictMode,
+					})
+					http.Redirect(w, r, location, http.StatusFound)
+					return
+				}
+
 				cookie, err := r.Cookie("token")
 				if err != nil {
 					w.WriteHeader(http.StatusForbidden)
@@ -244,12 +266,11 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("HEAD /api/version", handle(s.apiVersion))
 	mux.Handle("POST /api/me", handle(s.copilotUserHandler))
 	mux.Handle("POST /api/signout", handle(s.copilotSignOutHandler))
-	mux.HandleFunc("GET /auth/github", s.copilotAuthPageHandler)
-	mux.Handle("GET /auth/github/status", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := s.copilotAuthStatusHandler(w, r); err != nil {
-			s.handleError(w, err)
-		}
+	mux.Handle("GET /auth/github", handle(func(w http.ResponseWriter, r *http.Request) error {
+		s.copilotAuthPageHandler(w, r)
+		return nil
 	}))
+	mux.Handle("GET /auth/github/status", handle(s.copilotAuthStatusHandler))
 
 	// React app - catch all non-API routes and serve the React app
 	mux.Handle("GET /", s.appHandler())
