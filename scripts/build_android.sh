@@ -19,10 +19,25 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ANDROID_DIR="$REPO_ROOT/android"
 GO_MOBILE_PKG="$REPO_ROOT/app/cmd/android/ollama"
 AAR_OUTPUT="$ANDROID_DIR/app/libs/ollama.aar"
+GOMOBILE_VERSION="${GOMOBILE_VERSION:-v0.0.0-20241204233305-ce44b2716d33}"
 GRADLE_BIN="${GRADLE_BIN:-gradle}"
 APP_VERSION_NAME="${APP_VERSION_NAME:-${VERSION:-0.0.0}}"
 APP_VERSION_CODE="${APP_VERSION_CODE:-1}"
-export GOTOOLCHAIN="${GOTOOLCHAIN:-auto}"
+
+RESTORE_MODULE_FILES=false
+if command -v git &>/dev/null; then
+    if git -C "$REPO_ROOT" diff --quiet -- go.mod go.sum && git -C "$REPO_ROOT" diff --cached --quiet -- go.mod go.sum; then
+        RESTORE_MODULE_FILES=true
+    fi
+fi
+
+cleanup_module_files() {
+    if [ "$RESTORE_MODULE_FILES" = true ] && command -v git &>/dev/null; then
+        git -C "$REPO_ROOT" restore --source=HEAD -- go.mod go.sum >/dev/null 2>&1 || true
+    fi
+}
+
+trap cleanup_module_files EXIT
 
 echo "=== Building Ollama Android App ==="
 
@@ -52,13 +67,12 @@ go generate ./app/ui 2>/dev/null || echo "(skipping go generate — tscriptify m
 echo ""
 echo "--- Step 3: gomobile bind → AAR ---"
 
-# Ensure gomobile is available
-if ! command -v gomobile &>/dev/null; then
-    echo "Installing gomobile..."
-    go install golang.org/x/mobile/cmd/gomobile@latest
-    go install golang.org/x/mobile/cmd/gobind@latest
-    gomobile init
-fi
+echo "Using golang.org/x/mobile@$GOMOBILE_VERSION"
+go get "golang.org/x/mobile/bind@$GOMOBILE_VERSION"
+go install "golang.org/x/mobile/cmd/gomobile@$GOMOBILE_VERSION"
+go install "golang.org/x/mobile/cmd/gobind@$GOMOBILE_VERSION"
+export PATH="$(go env GOPATH)/bin:$PATH"
+gomobile init
 
 mkdir -p "$(dirname "$AAR_OUTPUT")"
 

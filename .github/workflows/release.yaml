@@ -75,6 +75,7 @@ jobs:
       VERSION: ${{ needs.setup.outputs.version }}
       APP_VERSION_NAME: ${{ needs.setup.outputs.version }}
       APP_VERSION_CODE: ${{ github.run_number }}
+      GOMOBILE_VERSION: v0.0.0-20241204233305-ce44b2716d33
     steps:
       - uses: actions/checkout@v6
         with:
@@ -102,28 +103,10 @@ jobs:
           sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018"
           echo "ANDROID_NDK_HOME=${sdk_root}/ndk/27.2.12479018" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_ROOT=${sdk_root}/ndk/27.2.12479018" >> "$GITHUB_ENV"
-      - name: Install gomobile
-        shell: bash
-        env:
-          GOTOOLCHAIN: auto
-        run: |
-          go install golang.org/x/mobile/cmd/gomobile@latest
-          go install golang.org/x/mobile/cmd/gobind@latest
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
-      - name: Initialize gomobile
-        shell: bash
-        env:
-          GOTOOLCHAIN: auto
-        run: |
-          export PATH="$(go env GOPATH)/bin:$PATH"
-          gomobile init
       - name: Build Android APK
         shell: bash
-        env:
-          GOTOOLCHAIN: auto
         run: |
           chmod +x ./scripts/build_android.sh
-          export PATH="$(go env GOPATH)/bin:$PATH"
           ./scripts/build_android.sh debug
           mkdir -p dist
           cp android/app/build/outputs/apk/debug/app-debug.apk dist/Ollama-android-debug.apk
