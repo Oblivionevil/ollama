@@ -20,7 +20,10 @@ import (
 	"github.com/ollama/ollama/app/ui/responses"
 )
 
-const defaultGitHubChatRepo = "Oblivionevil/Chatrepo"
+const (
+	defaultGitHubChatRepo = "Oblivionevil/Chatrepo"
+	githubChatFolder      = "Chat"
+)
 
 type githubContentsFile struct {
 	Name     string `json:"name,omitempty"`
@@ -50,105 +53,124 @@ type githubChatManifest struct {
 }
 
 func (s *Server) listChatInfos(ctx context.Context) ([]responses.ChatInfo, error) {
-	chats, err := s.Store.Chats()
+	session, err := s.githubChatAuthorizedSession()
 	if err != nil {
+		if isAuthorizationError(err) {
+			return []responses.ChatInfo{}, nil
+		}
 		return nil, err
 	}
 
-	infosByID := make(map[string]responses.ChatInfo, len(chats))
-	for _, chat := range chats {
-		info := chatInfoFromChat(chat)
-		infosByID[info.ID] = info
+	if err := s.migrateLocalChatsToGitHub(ctx, session); err != nil {
+		s.log().Warn("failed to migrate local chats to GitHub", "error", err)
 	}
 
-	session, err := s.githubChatAuthorizedSession()
-	if err == nil {
-		manifest, manifestErr := s.loadGitHubChatManifest(ctx, session)
-		if manifestErr != nil {
-			s.log().Warn("failed to load GitHub chat manifest", "error", manifestErr)
-		} else {
-			for _, remote := range manifest.Chats {
-				local, ok := infosByID[remote.ID]
-				if !ok || remote.UpdatedAt.After(local.UpdatedAt) {
-					infosByID[remote.ID] = remote
-				}
-			}
-		}
-	} else if !isAuthorizationError(err) {
-		s.log().Warn("failed to load GitHub chat session", "error", err)
+	manifest, err := s.loadGitHubChatManifest(ctx, session)
+	if err != nil {
+		return nil, err
 	}
+	sortManifest(manifest)
 
-	chatInfos := make([]responses.ChatInfo, 0, len(infosByID))
-	for _, info := range infosByID {
-		chatInfos = append(chatInfos, info)
-	}
-
-	sort.SliceStable(chatInfos, func(i, j int) bool {
-		if chatInfos[i].UpdatedAt.Equal(chatInfos[j].UpdatedAt) {
-			return chatInfos[i].CreatedAt.After(chatInfos[j].CreatedAt)
-		}
-		return chatInfos[i].UpdatedAt.After(chatInfos[j].UpdatedAt)
-	})
-
-	return chatInfos, nil
+	return append([]responses.ChatInfo(nil), manifest.Chats...), nil
 }
 
-func (s *Server) chatWithGitHubFallback(ctx context.Context, chatID string, local *store.Chat) (*store.Chat, error) {
-	session, err := s.githubChatAuthorizedSession()
-	if err != nil {
-		if local != nil {
-			return local, nil
-		}
-		if isAuthorizationError(err) {
-			return nil, fmt.Errorf("%w: chat %s", not.Found, chatID)
-		}
+func (s *Server) loadChatFromGitHub(ctx context.Context, session *store.AuthSession, chatID string) (*store.Chat, error) {
+	if err := s.migrateLocalChatToGitHub(ctx, session, chatID); err != nil {
 		return nil, err
 	}
 
-	if local == nil {
-		remote, found, remoteErr := s.loadGitHubChat(ctx, session, chatID)
-		if remoteErr != nil {
-			s.log().Warn("failed to load chat from GitHub", "chat_id", chatID, "error", remoteErr)
-			return nil, fmt.Errorf("%w: chat %s", not.Found, chatID)
-		}
-		if !found {
-			return nil, fmt.Errorf("%w: chat %s", not.Found, chatID)
-		}
-		if saveErr := s.Store.SetChat(*remote); saveErr != nil {
-			s.log().Warn("failed to cache GitHub chat locally", "chat_id", chatID, "error", saveErr)
-		}
-		return remote, nil
-	}
-
-	manifest, manifestErr := s.loadGitHubChatManifest(ctx, session)
-	if manifestErr != nil {
-		s.log().Warn("failed to refresh GitHub chat manifest", "error", manifestErr)
-		return local, nil
-	}
-
-	remoteInfo, found := manifest.chatInfo(chatID)
-	if !found {
-		return local, nil
-	}
-
-	localInfo := chatInfoFromChat(*local)
-	if !remoteInfo.UpdatedAt.After(localInfo.UpdatedAt) {
-		return local, nil
-	}
-
-	remote, found, remoteErr := s.loadGitHubChat(ctx, session, chatID)
-	if remoteErr != nil {
-		s.log().Warn("failed to refresh chat from GitHub", "chat_id", chatID, "error", remoteErr)
-		return local, nil
+	remote, found, err := s.loadGitHubChat(ctx, session, chatID)
+	if err != nil {
+		return nil, err
 	}
 	if !found {
-		return local, nil
-	}
-	if saveErr := s.Store.SetChat(*remote); saveErr != nil {
-		s.log().Warn("failed to cache refreshed GitHub chat locally", "chat_id", chatID, "error", saveErr)
+		return nil, fmt.Errorf("%w: chat %s", not.Found, chatID)
 	}
 
 	return remote, nil
+}
+
+func (s *Server) storeChatRemotely(session *store.AuthSession, chat store.Chat) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	if err := s.syncChatToGitHub(ctx, session, chat); err != nil {
+		return err
+	}
+
+	return s.deleteLocalChatCache(chat.ID)
+}
+
+func (s *Server) deleteChatRemotely(session *store.AuthSession, chatID string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	if err := s.deleteChatFromGitHub(ctx, session, chatID); err != nil {
+		return err
+	}
+
+	return s.deleteLocalChatCache(chatID)
+}
+
+func (s *Server) deleteLocalChatCache(chatID string) error {
+	if s.Store == nil {
+		return nil
+	}
+
+	err := s.Store.DeleteChat(chatID)
+	if err != nil && !errors.Is(err, not.Found) {
+		return err
+	}
+
+	return nil
+}
+
+func (s *Server) migrateLocalChatsToGitHub(ctx context.Context, session *store.AuthSession) error {
+	if s.Store == nil {
+		return nil
+	}
+
+	localChats, err := s.Store.Chats()
+	if err != nil {
+		return err
+	}
+
+	for _, localChat := range localChats {
+		if err := s.migrateLocalChatToGitHub(ctx, session, localChat.ID); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (s *Server) migrateLocalChatToGitHub(ctx context.Context, session *store.AuthSession, chatID string) error {
+	if s.Store == nil {
+		return nil
+	}
+
+	localChat, err := s.Store.ChatWithOptions(chatID, true)
+	if err != nil {
+		if errors.Is(err, not.Found) {
+			return nil
+		}
+		return err
+	}
+
+	manifest, err := s.loadGitHubChatManifest(ctx, session)
+	if err != nil {
+		return err
+	}
+
+	localInfo := chatInfoFromChat(*localChat)
+	remoteInfo, found := manifest.chatInfo(chatID)
+	if !found || localInfo.UpdatedAt.After(remoteInfo.UpdatedAt) {
+		if err := s.syncChatToGitHub(ctx, session, *localChat); err != nil {
+			return err
+		}
+	}
+
+	return s.deleteLocalChatCache(chatID)
 }
 
 func (s *Server) syncChatToGitHubBestEffort(_ context.Context, chat store.Chat) {
@@ -452,11 +474,11 @@ func (s *Server) githubContentsEndpoint(filePath string) (string, error) {
 }
 
 func (s *Server) githubChatFilePath(chatID string) string {
-	return fmt.Sprintf("chats/%s.json", chatID)
+	return fmt.Sprintf("%s/%s.json", githubChatFolder, chatID)
 }
 
 func (s *Server) githubChatManifestPath() string {
-	return "chats/index.json"
+	return fmt.Sprintf("%s/index.json", githubChatFolder)
 }
 
 func decodeGitHubFileContent(content string) ([]byte, error) {

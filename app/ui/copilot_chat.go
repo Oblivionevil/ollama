@@ -592,15 +592,7 @@ func (s *Server) streamCopilotChat(ctx context.Context, session *store.AuthSessi
 	}
 }
 
-func (s *Server) chatCopilot(ctx context.Context, w http.ResponseWriter, flusher http.Flusher, chat *store.Chat, req responses.ChatRequest, meta *copilotModelMetadata) error {
-	session, err := s.copilotAuthorizedSession(ctx)
-	if err != nil {
-		errorEvent := s.getError(err)
-		json.NewEncoder(w).Encode(errorEvent)
-		flusher.Flush()
-		return nil
-	}
-
+func (s *Server) chatCopilot(ctx context.Context, w http.ResponseWriter, flusher http.Flusher, session *store.AuthSession, chat *store.Chat, req responses.ChatRequest, meta *copilotModelMetadata) error {
 	var thinkingTimeStart *time.Time
 	var thinkingTimeEnd *time.Time
 	assistantCreated := false
@@ -613,7 +605,7 @@ func (s *Server) chatCopilot(ctx context.Context, w http.ResponseWriter, flusher
 		message := store.NewMessage("assistant", "", &store.MessageOptions{Model: req.Model, Stream: true})
 		chat.Messages = append(chat.Messages, message)
 		assistantCreated = true
-		return s.Store.AppendMessage(chat.ID, message)
+		return nil
 	}
 
 	appendThinking := func(delta string) error {
@@ -634,9 +626,6 @@ func (s *Server) chatCopilot(ctx context.Context, w http.ResponseWriter, flusher
 		last.ThinkingTimeStart = thinkingTimeStart
 		if thinkingTimeEnd != nil {
 			last.ThinkingTimeEnd = thinkingTimeEnd
-		}
-		if err := s.Store.UpdateLastMessage(chat.ID, *last); err != nil {
-			return err
 		}
 		if err := json.NewEncoder(w).Encode(responses.ChatEvent{
 			EventName:         "thinking",
@@ -670,9 +659,6 @@ func (s *Server) chatCopilot(ctx context.Context, w http.ResponseWriter, flusher
 		if thinkingTimeEnd != nil {
 			last.ThinkingTimeEnd = thinkingTimeEnd
 		}
-		if err := s.Store.UpdateLastMessage(chat.ID, *last); err != nil {
-			return err
-		}
 		if err := json.NewEncoder(w).Encode(responses.ChatEvent{
 			EventName:         "chat",
 			Content:           &delta,
@@ -685,7 +671,7 @@ func (s *Server) chatCopilot(ctx context.Context, w http.ResponseWriter, flusher
 		return nil
 	}
 
-	err = s.streamCopilotChat(ctx, session, *meta, chat, req.Think, func(content, thinking string) error {
+	err := s.streamCopilotChat(ctx, session, *meta, chat, req.Think, func(content, thinking string) error {
 		if err := appendThinking(thinking); err != nil {
 			return err
 		}
@@ -696,6 +682,12 @@ func (s *Server) chatCopilot(ctx context.Context, w http.ResponseWriter, flusher
 	})
 	if err != nil {
 		s.log().Error("copilot chat stream error", "error", err)
+		if len(chat.Messages) > 0 && chat.Messages[len(chat.Messages)-1].Role == "assistant" {
+			chat.Messages[len(chat.Messages)-1].Stream = false
+		}
+		if persistErr := s.storeChatRemotely(session, *chat); persistErr != nil {
+			s.log().Warn("failed to persist partial chat to GitHub", "chat_id", chat.ID, "error", persistErr)
+		}
 		errorEvent := s.getError(err)
 		json.NewEncoder(w).Encode(errorEvent)
 		flusher.Flush()
@@ -708,9 +700,14 @@ func (s *Server) chatCopilot(ctx context.Context, w http.ResponseWriter, flusher
 		last := &chat.Messages[len(chat.Messages)-1]
 		last.ThinkingTimeEnd = thinkingTimeEnd
 		last.UpdatedAt = now
-		if err := s.Store.UpdateLastMessage(chat.ID, *last); err != nil {
-			return err
-		}
+	}
+
+	if len(chat.Messages) > 0 && chat.Messages[len(chat.Messages)-1].Role == "assistant" {
+		chat.Messages[len(chat.Messages)-1].Stream = false
+	}
+
+	if err := s.storeChatRemotely(session, *chat); err != nil {
+		return err
 	}
 
 	if err := json.NewEncoder(w).Encode(responses.ChatEvent{EventName: "done"}); err != nil {
@@ -718,13 +715,5 @@ func (s *Server) chatCopilot(ctx context.Context, w http.ResponseWriter, flusher
 	}
 	flusher.Flush()
 
-	if len(chat.Messages) > 0 && chat.Messages[len(chat.Messages)-1].Role == "assistant" {
-		chat.Messages[len(chat.Messages)-1].Stream = false
-	}
-
-	if err := s.Store.SetChat(*chat); err != nil {
-		return err
-	}
-	s.syncChatToGitHubBestEffort(ctx, *chat)
 	return nil
 }

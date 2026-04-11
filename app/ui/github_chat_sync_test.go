@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/ollama/ollama/app/store"
+	"github.com/ollama/ollama/app/types/not"
 	"github.com/ollama/ollama/app/ui/responses"
 )
 
@@ -86,13 +88,12 @@ func TestListChatsIncludesGitHubManifestEntries(t *testing.T) {
 		}},
 		SyncedAt: time.Now().UTC(),
 	}
-	fakeAPI.putJSON(t, "chats/index.json", manifest)
-
 	server := &Server{
 		Store:            testStore,
 		githubAPIBaseURL: fakeAPI.server.URL,
 		githubChatRepo:   defaultGitHubChatRepo,
 	}
+	fakeAPI.putJSON(t, server.githubChatManifestPath(), manifest)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/chats", nil)
 	rr := httptest.NewRecorder()
@@ -134,14 +135,13 @@ func TestGetChatLoadsMissingChatFromGitHub(t *testing.T) {
 		Chats:    []responses.ChatInfo{chatInfoFromChat(chat)},
 		SyncedAt: time.Now().UTC(),
 	}
-	fakeAPI.putJSON(t, "chats/index.json", manifest)
-	fakeAPI.putJSON(t, "chats/remote-chat.json", chat)
-
 	server := &Server{
 		Store:            testStore,
 		githubAPIBaseURL: fakeAPI.server.URL,
 		githubChatRepo:   defaultGitHubChatRepo,
 	}
+	fakeAPI.putJSON(t, server.githubChatManifestPath(), manifest)
+	fakeAPI.putJSON(t, server.githubChatFilePath(chat.ID), chat)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/chat/remote-chat", nil)
 	req.SetPathValue("id", "remote-chat")
@@ -159,12 +159,69 @@ func TestGetChatLoadsMissingChatFromGitHub(t *testing.T) {
 		t.Fatalf("chat id = %q, want remote-chat", response.Chat.ID)
 	}
 
-	cached, err := testStore.Chat("remote-chat")
-	if err != nil {
-		t.Fatalf("cached chat lookup failed: %v", err)
+	_, err := testStore.Chat("remote-chat")
+	if !errors.Is(err, not.Found) {
+		t.Fatalf("local cache error = %v, want not found", err)
 	}
-	if cached == nil || cached.ID != "remote-chat" {
-		t.Fatalf("cached chat = %+v, want remote-chat", cached)
+}
+
+func TestListChatsMigratesLocalChatsToGitHubAndRemovesLocalCopy(t *testing.T) {
+	fakeAPI := newFakeGitHubContentsAPI(t)
+	testStore := &store.Store{DBPath: filepath.Join(t.TempDir(), "db.sqlite")}
+	defer testStore.Close()
+
+	if err := testStore.SetAuthSession(store.AuthSession{AccessToken: "gh-test-token"}); err != nil {
+		t.Fatalf("SetAuthSession() error = %v", err)
+	}
+
+	chat := store.Chat{
+		ID:        "local-chat",
+		Title:     "Local chat",
+		CreatedAt: time.Unix(1710000400, 0).UTC(),
+		Messages: []store.Message{
+			store.NewMessage("user", "migrate me", nil),
+		},
+	}
+	if err := testStore.SetChat(chat); err != nil {
+		t.Fatalf("SetChat() error = %v", err)
+	}
+
+	server := &Server{
+		Store:            testStore,
+		githubAPIBaseURL: fakeAPI.server.URL,
+		githubChatRepo:   defaultGitHubChatRepo,
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/chats", nil)
+	rr := httptest.NewRecorder()
+
+	if err := server.listChats(rr, req); err != nil {
+		t.Fatalf("listChats() error = %v", err)
+	}
+
+	var response responses.ChatsResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(response.ChatInfos) != 1 {
+		t.Fatalf("chat count = %d, want 1", len(response.ChatInfos))
+	}
+	if response.ChatInfos[0].ID != chat.ID {
+		t.Fatalf("chat id = %q, want %q", response.ChatInfos[0].ID, chat.ID)
+	}
+
+	rawChat := fakeAPI.fileContents(t, server.githubChatFilePath(chat.ID))
+	var storedChat store.Chat
+	if err := json.Unmarshal(rawChat, &storedChat); err != nil {
+		t.Fatalf("unmarshal stored chat: %v", err)
+	}
+	if storedChat.ID != chat.ID {
+		t.Fatalf("stored chat id = %q, want %q", storedChat.ID, chat.ID)
+	}
+
+	_, err := testStore.Chat(chat.ID)
+	if !errors.Is(err, not.Found) {
+		t.Fatalf("local cache error = %v, want not found", err)
 	}
 }
 

@@ -572,6 +572,14 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) error {
 		return fmt.Errorf("empty message")
 	}
 
+	session, err := s.copilotAuthorizedSession(r.Context())
+	if err != nil {
+		errorEvent := s.getError(err)
+		json.NewEncoder(w).Encode(errorEvent)
+		flusher.Flush()
+		return nil
+	}
+
 	if createdChat {
 		// send message to the client that the chat has been created
 		json.NewEncoder(w).Encode(responses.ChatEvent{
@@ -587,8 +595,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) error {
 		idx = *req.Index
 	}
 
-	// Load chat with attachments since we need them for processing
-	chat, err := s.Store.ChatWithOptions(cid, true)
+	chat, err := s.loadChatFromGitHub(r.Context(), session, cid)
 	if err != nil {
 		if !errors.Is(err, not.Found) {
 			return err
@@ -645,7 +652,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) error {
 			chat.Messages = append(chat.Messages, userMsg)
 		}
 
-		if err := s.Store.SetChat(*chat); err != nil {
+		if err := s.storeChatRemotely(session, *chat); err != nil {
 			return err
 		}
 	}
@@ -666,7 +673,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) error {
 		return nil
 	}
 	if remoteModel != nil {
-		return s.chatCopilot(r.Context(), w, flusher, chat, req, remoteModel)
+		return s.chatCopilot(r.Context(), w, flusher, session, chat, req, remoteModel)
 	}
 	errorEvent := s.getError(fmt.Errorf("model %q is not available in GitHub Copilot", req.Model))
 	json.NewEncoder(w).Encode(errorEvent)
@@ -681,20 +688,28 @@ func (s *Server) getChat(w http.ResponseWriter, r *http.Request) error {
 		return fmt.Errorf("chat ID is required")
 	}
 
-	chat, err := s.Store.Chat(cid)
+	session, err := s.githubChatAuthorizedSession()
 	if err != nil {
-		chat = nil
+		if isAuthorizationError(err) {
+			data := responses.ChatResponse{Chat: store.Chat{}}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(data)
+			return nil
+		}
+		return err
 	}
 
-	chat, err = s.chatWithGitHubFallback(r.Context(), cid, chat)
+	chat, err := s.loadChatFromGitHub(r.Context(), session, cid)
 	if err != nil {
-		// Return empty chat if not found
-		data := responses.ChatResponse{
-			Chat: store.Chat{},
+		if errors.Is(err, not.Found) {
+			data := responses.ChatResponse{
+				Chat: store.Chat{},
+			}
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(data)
+			return nil //nolint:nilerr
 		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(data)
-		return nil //nolint:nilerr
+		return err
 	}
 
 	// fill missing tool_name on tool messages (from previous tool_calls) so labels don’t flip after reload.
@@ -751,18 +766,21 @@ func (s *Server) renameChat(w http.ResponseWriter, r *http.Request) error {
 		return fmt.Errorf("invalid request body: %w", err)
 	}
 
-	// Get the chat without loading attachments (we only need to update the title)
-	chat, err := s.Store.ChatWithOptions(cid, false)
+	session, err := s.githubChatAuthorizedSession()
+	if err != nil {
+		return err
+	}
+
+	chat, err := s.loadChatFromGitHub(r.Context(), session, cid)
 	if err != nil {
 		return fmt.Errorf("chat not found: %w", err)
 	}
 
 	// Update the title
 	chat.Title = req.Title
-	if err := s.Store.SetChat(*chat); err != nil {
+	if err := s.storeChatRemotely(session, *chat); err != nil {
 		return fmt.Errorf("failed to update chat: %w", err)
 	}
-	s.syncChatToGitHubBestEffort(r.Context(), *chat)
 
 	// Return the updated chat info
 	w.Header().Set("Content-Type", "application/json")
@@ -776,21 +794,30 @@ func (s *Server) deleteChat(w http.ResponseWriter, r *http.Request) error {
 		return fmt.Errorf("chat ID is required")
 	}
 
-	// Check if the chat exists (no need to load attachments)
-	_, err := s.Store.ChatWithOptions(cid, false)
+	session, err := s.githubChatAuthorizedSession()
 	if err != nil {
-		if errors.Is(err, not.Found) {
-			w.WriteHeader(http.StatusNotFound)
-			return fmt.Errorf("chat not found")
-		}
-		return fmt.Errorf("failed to get chat: %w", err)
+		return err
 	}
 
-	// Delete the chat
-	if err := s.Store.DeleteChat(cid); err != nil {
+	if err := s.migrateLocalChatToGitHub(r.Context(), session, cid); err != nil {
+		return fmt.Errorf("failed to prepare chat: %w", err)
+	}
+
+	_, found, err := s.loadGitHubChat(r.Context(), session, cid)
+	if err != nil {
+		return fmt.Errorf("failed to get chat: %w", err)
+	}
+	if !found {
+		if err := s.deleteLocalChatCache(cid); err != nil {
+			s.log().Warn("failed to remove local chat cache", "chat_id", cid, "error", err)
+		}
+		w.WriteHeader(http.StatusNotFound)
+		return fmt.Errorf("chat not found")
+	}
+
+	if err := s.deleteChatRemotely(session, cid); err != nil {
 		return fmt.Errorf("failed to delete chat: %w", err)
 	}
-	s.deleteChatFromGitHubBestEffort(r.Context(), cid)
 
 	w.WriteHeader(http.StatusOK)
 	return nil
