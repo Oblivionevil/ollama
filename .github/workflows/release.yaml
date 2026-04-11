@@ -178,15 +178,27 @@ jobs:
         run: |
           RELEASE_TAG="${{ needs.setup.outputs.release_tag }}"
           RELEASE_VERSION="${RELEASE_TAG%%-*}"
+          if [ "$RELEASE_TAG" = "$RELEASE_VERSION" ]; then
+            PRERELEASE_FLAG="false"
+          else
+            PRERELEASE_FLAG="true"
+          fi
           OLD_TAG=$(gh release ls --json name,tagName | jq -r ".[] | select(.name == \"${RELEASE_VERSION}\") | .tagName")
           if [ -n "$OLD_TAG" ]; then
-            gh release edit "$OLD_TAG" --tag "$RELEASE_TAG"
+            gh release edit "$OLD_TAG" --tag "$RELEASE_TAG" --title "$RELEASE_VERSION" --prerelease="$PRERELEASE_FLAG"
           else
-            gh release create "$RELEASE_TAG" \
-              --title "$RELEASE_VERSION" \
-              --draft \
-              --generate-notes \
-              --prerelease
+            if [ "$PRERELEASE_FLAG" = "true" ]; then
+              gh release create "$RELEASE_TAG" \
+                --title "$RELEASE_VERSION" \
+                --draft \
+                --generate-notes \
+                --prerelease
+            else
+              gh release create "$RELEASE_TAG" \
+                --title "$RELEASE_VERSION" \
+                --draft \
+                --generate-notes
+            fi
           fi
       - name: Upload artifacts
         shell: bash
