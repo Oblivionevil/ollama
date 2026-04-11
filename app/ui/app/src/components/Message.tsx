@@ -892,10 +892,8 @@ function OtherRoleMessage({
   const messageRef = useRef<HTMLDivElement>(null);
   const shouldRenderThinking =
     message.role === "assistant" &&
-    (Boolean(message.thinking?.trim()) ||
-      (isStreaming &&
-        Boolean(message.thinkingTimeStart) &&
-        !message.content?.trim()));
+    Boolean(message.thinking?.trim()) &&
+    !isStreaming;
 
   return (
     <div

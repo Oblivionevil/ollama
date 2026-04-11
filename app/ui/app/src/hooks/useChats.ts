@@ -192,14 +192,6 @@ export const useIsWaitingForLoad = (chatId: string) => {
   return isWaitingForLoad && !isSameModel;
 };
 
-const shouldUseThinkingPlaceholder = (think?: boolean | string) => {
-  if (typeof think === "string") {
-    return think.trim().length > 0;
-  }
-
-  return think === true;
-};
-
 const isEmptyAssistantPlaceholder = (message?: Message) => {
   if (!message || message.role !== "assistant") {
     return false;
@@ -212,16 +204,6 @@ const isEmptyAssistantPlaceholder = (message?: Message) => {
     !message.tool_call
   );
 };
-
-const appendThinkingPlaceholder = (messages: Message[]) => [
-  ...messages,
-  new Message({
-    role: "assistant",
-    content: "",
-    thinking: "",
-    thinkingTimeStart: new Date(),
-  }),
-];
 
 const removeTrailingEmptyAssistantPlaceholder = (messages: Message[]) => {
   if (messages.length === 0) {
@@ -310,8 +292,6 @@ export const useSendMessage = (chatId: string) => {
       think?: boolean | string;
       onChatEvent?: (event: ChatEventUnion) => void;
     }) => {
-      const useThinkingPlaceholder = shouldUseThinkingPlaceholder(think);
-
       // For existing chats, set streaming state and add optimistic user message
       if (chatId !== "new") {
         setStreamingChatIds((prev: Set<string>) => {
@@ -352,9 +332,7 @@ export const useSendMessage = (chatId: string) => {
                 ...old,
                 chat: new Chat({
                   ...old.chat,
-                  messages: useThinkingPlaceholder
-                    ? appendThinkingPlaceholder(nextMessages)
-                    : nextMessages,
+                  messages: nextMessages,
                 }),
               };
             },
@@ -482,49 +460,8 @@ export const useSendMessage = (chatId: string) => {
             break;
           }
           case "thinking": {
-            // Handle thinking content
-            batcher.scheduleBatch((old: { chat: Chat } | undefined) => {
-              if (!old) return old;
-
-              const existingMessages = old.chat.messages || [];
-              const newMessages = [...existingMessages];
-
-              // Find or create the assistant message
-              let lastMessage = newMessages[newMessages.length - 1];
-              if (!lastMessage || lastMessage.role !== "assistant") {
-                newMessages.push(
-                  new Message({
-                    role: "assistant",
-                    content: "",
-                    thinking: "",
-                    model: effectiveModel,
-                  }),
-                );
-                lastMessage = newMessages[newMessages.length - 1];
-              }
-
-              // Update the last message with new thinking content
-              if (lastMessage) {
-                const updatedThinking =
-                  (lastMessage.thinking || "") + (event.thinking || "");
-                const updatedMessage = new Message({
-                  ...lastMessage,
-                  thinking: updatedThinking,
-                });
-                if (event.thinkingTimeStart) {
-                  updatedMessage.thinkingTimeStart = event.thinkingTimeStart;
-                }
-                newMessages[newMessages.length - 1] = updatedMessage;
-              }
-
-              return {
-                ...old,
-                chat: new Chat({
-                  ...old.chat,
-                  messages: newMessages,
-                }),
-              };
-            });
+            // Intentionally ignore live thinking updates in the chat UI.
+            // The final saved chat still includes thinking content after refetch.
             break;
           }
           case "tool_call": {
@@ -781,21 +718,13 @@ export const useSendMessage = (chatId: string) => {
               chat: new Chat({
                 id: newId,
                 model: effectiveModel,
-                messages: useThinkingPlaceholder
-                  ? appendThinkingPlaceholder([
-                      new Message({
-                        role: "user",
-                        content: message,
-                        attachments: attachments,
-                      }),
-                    ])
-                  : [
-                      new Message({
-                        role: "user",
-                        content: message,
-                        attachments: attachments,
-                      }),
-                    ],
+                messages: [
+                  new Message({
+                    role: "user",
+                    content: message,
+                    attachments: attachments,
+                  }),
+                ],
               }),
             });
 
