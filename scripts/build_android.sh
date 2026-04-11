@@ -22,6 +22,7 @@ AAR_OUTPUT="$ANDROID_DIR/app/libs/ollama.aar"
 GRADLE_BIN="${GRADLE_BIN:-gradle}"
 APP_VERSION_NAME="${APP_VERSION_NAME:-${VERSION:-0.0.0}}"
 APP_VERSION_CODE="${APP_VERSION_CODE:-1}"
+export GOTOOLCHAIN="${GOTOOLCHAIN:-auto}"
 
 echo "=== Building Ollama Android App ==="
 

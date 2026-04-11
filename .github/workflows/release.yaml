@@ -104,17 +104,23 @@ jobs:
           echo "ANDROID_NDK_ROOT=${sdk_root}/ndk/27.2.12479018" >> "$GITHUB_ENV"
       - name: Install gomobile
         shell: bash
+        env:
+          GOTOOLCHAIN: auto
         run: |
           go install golang.org/x/mobile/cmd/gomobile@latest
           go install golang.org/x/mobile/cmd/gobind@latest
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       - name: Initialize gomobile
         shell: bash
+        env:
+          GOTOOLCHAIN: auto
         run: |
           export PATH="$(go env GOPATH)/bin:$PATH"
           gomobile init
       - name: Build Android APK
         shell: bash
+        env:
+          GOTOOLCHAIN: auto
         run: |
           chmod +x ./scripts/build_android.sh
           export PATH="$(go env GOPATH)/bin:$PATH"
