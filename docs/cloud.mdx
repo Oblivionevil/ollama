@@ -13,37 +13,18 @@ For a list of supported models, see Ollama's [model library](https://ollama.com/
 
 ### Running Cloud models
 
-Ollama's cloud models require an account on [ollama.com](https://ollama.com). To sign in or create an account, run:
-
-```
-ollama signin
-```
+Ollama's cloud models require an account on [ollama.com](https://ollama.com). To sign in or create an account, open the Windows app, go to Settings, and complete the sign-in flow.
 
 <Tabs>
-  <Tab title="CLI">
-
-To run a cloud model, open the terminal and run:
-
-```
-ollama run gpt-oss:120b-cloud
-```
-
-  </Tab>
   <Tab title="Python">
 
-First, pull a cloud model so it can be accessed:
-
-```
-ollama pull gpt-oss:120b-cloud
-```
-
-Next, install [Ollama's Python library](https://github.com/ollama/ollama-python):
+Install [Ollama's Python library](https://github.com/ollama/ollama-python):
 
 ```
 pip install ollama
 ```
 
-Next, create and run a simple Python script:
+Then create and run a simple Python script:
 
 ```python
 from ollama import Client
@@ -64,13 +45,7 @@ for part in client.chat('gpt-oss:120b-cloud', messages=messages, stream=True):
   </Tab>
   <Tab title="JavaScript">
 
-First, pull a cloud model so it can be accessed:
-
-```
-ollama pull gpt-oss:120b-cloud
-```
-
-Next, install [Ollama's JavaScript library](https://github.com/ollama/ollama-js):
+Install [Ollama's JavaScript library](https://github.com/ollama/ollama-js):
 
 ```
 npm i ollama
@@ -97,13 +72,7 @@ for await (const part of response) {
   </Tab>
   <Tab title="cURL">
 
-First, pull a cloud model so it can be accessed:
-
-```
-ollama pull gpt-oss:120b-cloud
-```
-
-Run the following cURL command to run the command via Ollama's API:
+Run the following cURL command via Ollama's local API:
 
 ```
 curl http://localhost:11434/api/chat -d '{

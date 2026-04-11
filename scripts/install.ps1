@@ -3,7 +3,7 @@
     Install, upgrade, or uninstall Ollama on Windows.
 
 .DESCRIPTION
-    Downloads and installs Ollama.
+    Downloads and installs the Ollama desktop app for Windows.
 
     Quick install:
 
@@ -111,14 +111,14 @@ function Find-InnoSetupInstall {
 }
 
 function Update-SessionPath {
-    # Update PATH in current session so 'ollama' works immediately
+    # Keep the install directory on PATH in the current session.
     if ($InstallDir) {
         $ollamaDir = $InstallDir
     } else {
         $ollamaDir = Join-Path $env:LOCALAPPDATA "Programs\Ollama"
     }
 
-    # Add to PATH if not already present
+    # Add the install directory to PATH if it is not already present
     if (Test-Path $ollamaDir) {
         $currentPath = $env:PATH -split ';'
         if ($ollamaDir -notin $currentPath) {
@@ -305,11 +305,11 @@ function Invoke-Install {
     # Cleanup
     Remove-Item $tempInstaller -Force -ErrorAction SilentlyContinue
 
-    # Update PATH in current session so 'ollama' works immediately
+    # Update PATH in the current session
     Write-Step "Updating session PATH"
     Update-SessionPath
 
-    Write-Host ">>> Install complete. Run 'ollama' from the command line."
+    Write-Host ">>> Install complete. Launch Ollama from the Start menu."
 }
 
 # --------------------------------------------------------------------------

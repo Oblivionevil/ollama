@@ -7,7 +7,15 @@ Vision models accept images alongside text so the model can describe, classify, 
 ## Quick start
 
 ```shell
-ollama run gemma3 ./image.png whats in this image?
+curl http://localhost:11434/api/chat -d '{
+  "model": "gemma3",
+  "messages": [{
+    "role": "user",
+    "content": "What is in this image?",
+    "images": ["<base64-encoded-image>"]
+  }],
+  "stream": false
+}'
 ```
 
 

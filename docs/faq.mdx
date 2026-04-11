@@ -4,13 +4,9 @@ title: FAQ
 
 ## How can I upgrade Ollama?
 
-Ollama on macOS and Windows will automatically download updates. Click on the taskbar or menubar item and then click "Restart to update" to apply the update. Updates can also be installed by downloading the latest version [manually](https://ollama.com/download/).
+The Windows desktop app automatically downloads updates. Click the taskbar item and then click "Restart to update" to apply the update.
 
-On Linux, re-run the install script:
-
-```shell
-curl -fsSL https://ollama.com/install.sh | sh
-```
+You can also install the latest version manually from [ollama.com/download](https://ollama.com/download/).
 
 ## How can I view the logs?
 
@@ -24,17 +20,7 @@ Please refer to the [GPU docs](./gpu.mdx).
 
 By default, Ollama uses a context window size of 4096 tokens.
 
-This can be overridden with the `OLLAMA_CONTEXT_LENGTH` environment variable. For example, to set the default context window to 8K, use:
-
-```shell
-OLLAMA_CONTEXT_LENGTH=8192 ollama serve
-```
-
-To change this when using `ollama run`, use `/set parameter`:
-
-```shell
-/set parameter num_ctx 4096
-```
+In the Windows desktop app, use the context length slider in Settings.
 
 When using the API, specify the `num_ctx` parameter:
 
@@ -50,67 +36,13 @@ curl http://localhost:11434/api/generate -d '{
 
 ## How can I tell if my model was loaded onto the GPU?
 
-Use the `ollama ps` command to see what models are currently loaded into memory.
+Review the local logs described in [Troubleshooting](./troubleshooting.mdx). The server log records detected GPU libraries and backend selection while the desktop app is running.
 
-```shell
-ollama ps
-```
-
-<Info>
-
-**Output**:
-
-```
-NAME        ID            SIZE    PROCESSOR   UNTIL
-llama3:70b  bcfb190ca3a7  42 GB   100% GPU    4 minutes from now
-```
-</Info>
-
-The `Processor` column will show which memory the model was loaded into:
-
-- `100% GPU` means the model was loaded entirely into the GPU
-- `100% CPU` means the model was loaded entirely in system memory
-- `48%/52% CPU/GPU` means the model was loaded partially onto both the GPU and into system memory
+If you need more detail, enable `OLLAMA_DEBUG=1`, restart the app, and reproduce the request.
 
 ## How do I configure Ollama server?
 
 Ollama server can be configured with environment variables.
-
-### Setting environment variables on Mac
-
-If Ollama is run as a macOS application, environment variables should be set using `launchctl`:
-
-1. For each environment variable, call `launchctl setenv`.
-
-   ```bash
-   launchctl setenv OLLAMA_HOST "0.0.0.0:11434"
-   ```
-
-2. Restart Ollama application.
-
-### Setting environment variables on Linux
-
-If Ollama is run as a systemd service, environment variables should be set using `systemctl`:
-
-1. Edit the systemd service by calling `systemctl edit ollama.service`. This will open an editor.
-
-2. For each environment variable, add a line `Environment` under section `[Service]`:
-
-   ```ini
-   [Service]
-   Environment="OLLAMA_HOST=0.0.0.0:11434"
-   ```
-
-3. Save and exit.
-
-4. Reload `systemd` and restart Ollama:
-
-   ```shell
-   systemctl daemon-reload
-   systemctl restart ollama
-   ```
-
-### Setting environment variables on Windows
 
 On Windows, Ollama inherits your user and system environment variables.
 
@@ -134,27 +66,6 @@ Ollama pulls models from the Internet and may require a proxy server to access t
   Avoid setting `HTTP_PROXY`. Ollama does not use HTTP for model pulls, only
   HTTPS. Setting `HTTP_PROXY` may interrupt client connections to the server.
 </Note>
-
-### How do I use Ollama behind a proxy in Docker?
-
-The Ollama Docker container image can be configured to use a proxy by passing `-e HTTPS_PROXY=https://proxy.example.com` when starting the container.
-
-Alternatively, the Docker daemon can be configured to use a proxy. Instructions are available for Docker Desktop on [macOS](https://docs.docker.com/desktop/settings/mac/#proxies), [Windows](https://docs.docker.com/desktop/settings/windows/#proxies), and [Linux](https://docs.docker.com/desktop/settings/linux/#proxies), and Docker [daemon with systemd](https://docs.docker.com/config/daemon/systemd/#httphttps-proxy).
-
-Ensure the certificate is installed as a system certificate when using HTTPS. This may require a new Docker image when using a self-signed certificate.
-
-```dockerfile
-FROM ollama/ollama
-COPY my-ca.pem /usr/local/share/ca-certificates/my-ca.crt
-RUN update-ca-certificates
-```
-
-Build and run this image:
-
-```shell
-docker build -t ollama-with-ca .
-docker run -d -e HTTPS_PROXY=https://my.proxy.example.com -p 11434:11434 ollama-with-ca
-```
 
 ## Does Ollama send my prompts and answers back to ollama.com?
 
@@ -223,38 +134,25 @@ Ollama allows cross-origin requests from `127.0.0.1` and `0.0.0.0` by default. A
 
 For browser extensions, you'll need to explicitly allow the extension's origin pattern. Set `OLLAMA_ORIGINS` to include `chrome-extension://*`, `moz-extension://*`, and `safari-web-extension://*` if you wish to allow all browser extensions access, or specific extensions as needed:
 
-```
-# Allow all Chrome, Firefox, and Safari extensions
-OLLAMA_ORIGINS=chrome-extension://*,moz-extension://*,safari-web-extension://* ollama serve
+```text
+OLLAMA_ORIGINS=chrome-extension://*,moz-extension://*,safari-web-extension://*
 ```
 
 Refer to the section [above](#how-do-i-configure-ollama-server) for how to set environment variables on your platform.
 
 ## Where are models stored?
 
-- macOS: `~/.ollama/models`
-- Linux: `/usr/share/ollama/.ollama/models`
 - Windows: `C:\Users\%username%\.ollama\models`
 
 ### How do I set them to a different location?
 
 If a different directory needs to be used, set the environment variable `OLLAMA_MODELS` to the chosen directory.
 
-<Note>
-  On Linux using the standard installer, the `ollama` user needs read and write access to the specified directory. To assign the directory to the `ollama` user run `sudo chown -R ollama:ollama <directory>`.
-</Note>
-
 Refer to the section [above](#how-do-i-configure-ollama-server) for how to set environment variables on your platform.
 
 ## How can I use Ollama in Visual Studio Code?
 
 There is already a large collection of plugins available for VS Code as well as other editors that leverage Ollama. See the list of [extensions & plugins](https://github.com/ollama/ollama#extensions--plugins) at the bottom of the main repository readme.
-
-## How do I use Ollama with GPU acceleration in Docker?
-
-The Ollama Docker container can be configured with GPU acceleration in Linux or Windows (with WSL2). This requires the [nvidia-container-toolkit](https://github.com/NVIDIA/nvidia-container-toolkit). See [ollama/ollama](https://hub.docker.com/r/ollama/ollama) for more details.
-
-GPU acceleration is not available for Docker Desktop in macOS due to the lack of GPU passthrough and emulation.
 
 ## Why is networking slow in WSL2 on Windows 10?
 
@@ -280,19 +178,9 @@ To use the chat completions endpoint, use:
 curl http://localhost:11434/api/chat -d '{"model": "mistral"}'
 ```
 
-To preload a model using the CLI, use the command:
-
-```shell
-ollama run llama3.2 ""
-```
-
 ## How do I keep a model loaded in memory or make it unload immediately?
 
-By default models are kept in memory for 5 minutes before being unloaded. This allows for quicker response times if you're making numerous requests to the LLM. If you want to immediately unload a model from memory, use the `ollama stop` command:
-
-```shell
-ollama stop llama3.2
-```
+By default models are kept in memory for 5 minutes before being unloaded. This allows for quicker response times if you're making numerous requests to the LLM.
 
 If you're using the API, use the `keep_alive` parameter with the `/api/generate` and `/api/chat` endpoints to set the amount of time that a model stays in memory. The `keep_alive` parameter can be set to:
 
@@ -313,7 +201,7 @@ To unload the model and free up memory use:
 curl http://localhost:11434/api/generate -d '{"model": "llama3.2", "keep_alive": 0}'
 ```
 
-Alternatively, you can change the amount of time all models are loaded into memory by setting the `OLLAMA_KEEP_ALIVE` environment variable when starting the Ollama server. The `OLLAMA_KEEP_ALIVE` variable uses the same parameter types as the `keep_alive` parameter types mentioned above. Refer to the section explaining [how to configure the Ollama server](#how-do-i-configure-ollama-server) to correctly set the environment variable.
+Alternatively, you can change the amount of time all models are loaded into memory by setting the `OLLAMA_KEEP_ALIVE` environment variable and restarting the app. The `OLLAMA_KEEP_ALIVE` variable uses the same parameter types as the `keep_alive` parameter types mentioned above. Refer to the section explaining [how to configure the Ollama server](#how-do-i-configure-ollama-server) to correctly set the environment variable.
 
 The `keep_alive` API parameter with the `/api/generate` and `/api/chat` API endpoints will override the `OLLAMA_KEEP_ALIVE` setting.
 
@@ -379,13 +267,7 @@ You'll need it to:
 
 ### How to Add the Key
 
-* **Sign-in via the Settings page** in the **Mac** and **Windows App**
-
-* **Sign‑in via CLI**
-
-```shell
-ollama signin
-```
+* **Sign in via the Settings page** in the **Windows app**
 
 * **Manually copy & paste** the key on the **Ollama Keys** page:
 [https://ollama.com/settings/keys](https://ollama.com/settings/keys)
@@ -394,8 +276,6 @@ ollama signin
 
 | OS | Path to `id_ed25519.pub` |
 | :- | :- |
-| macOS 	| `~/.ollama/id_ed25519.pub`			|
-| Linux		| `/usr/share/ollama/.ollama/id_ed25519.pub`	|
 | Windows	| `C:\Users\<username>\.ollama\id_ed25519.pub`	|
 
 <Note>
@@ -404,10 +284,7 @@ ollama signin
 
 ## How can I stop Ollama from starting when I login to my computer?
 
-Ollama for Windows and macOS register as a login item during installation.  You can disable this if you prefer not to have Ollama automatically start.  Ollama will respect this setting across upgrades, unless you uninstall the application.
+The Windows desktop app registers as a login item during installation. You can disable this if you prefer not to have Ollama automatically start. Ollama will respect this setting across upgrades, unless you uninstall the application.
 
 **Windows**
 - In `Task Manager` go to the `Startup apps` tab, search for `ollama` then click `Disable`
-
-**MacOS**
-- Open `Settings` and search for "Login Items", find the `Ollama` entry under `Allow in the Background`, then click the slider to disable.

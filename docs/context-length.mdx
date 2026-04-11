@@ -24,18 +24,16 @@ Cloud models are set to their maximum context length by default.
 Change the slider in the Ollama app under settings to your desired context length.
 ![Context length in Ollama app](./images/ollama-settings.png)
 
-### CLI
-If editing the context length for Ollama is not possible, the context length can also be updated when serving Ollama.  
-```
-OLLAMA_CONTEXT_LENGTH=64000 ollama serve
-```
+### API
 
-### Check allocated context length and model offloading
-For best performance, use the maximum context length for a model, and avoid offloading the model to CPU. Verify the split under `PROCESSOR` using `ollama ps`.
-```
-ollama ps
-```
-```
-NAME             ID              SIZE      PROCESSOR    CONTEXT    UNTIL
-gemma3:latest    a2af6cc3eb7f    6.6 GB    100% GPU     65536      2 minutes from now
+If you are calling the local API directly, set `num_ctx` on the request:
+
+```sh
+curl http://localhost:11434/api/chat -d '{
+  "model": "gemma3",
+  "messages": [{ "role": "user", "content": "Summarize these notes." }],
+  "options": {
+    "num_ctx": 64000
+  }
+}'
 ```

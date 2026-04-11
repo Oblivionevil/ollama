@@ -375,18 +375,24 @@ Ollama supports the [OpenAI Responses API](https://platform.openai.com/docs/api-
 
 ## Models
 
-Before using a model, pull it locally `ollama pull`:
+Before using a model, make it available locally. For example:
 
 ```shell
-ollama pull llama3.2
+curl http://localhost:11434/api/pull -d '{
+  "model": "llama3.2",
+  "stream": false
+}'
 ```
 
 ### Default model names
 
-For tooling that relies on default OpenAI model names such as `gpt-3.5-turbo`, use `ollama cp` to copy an existing model name to a temporary name:
+For tooling that relies on default OpenAI model names such as `gpt-3.5-turbo`, use `/api/copy` to copy an existing model name to a temporary name:
 
 ```shell
-ollama cp llama3.2 gpt-3.5-turbo
+curl http://localhost:11434/api/copy -d '{
+  "source": "llama3.2",
+  "destination": "gpt-3.5-turbo"
+}'
 ```
 
 Afterwards, this new model name can be specified the `model` field:
@@ -414,7 +420,18 @@ FROM <some model>
 PARAMETER num_ctx <context size>
 ```
 
-Use the `ollama create mymodel` command to create a new model with the updated context size. Call the API with the updated model name:
+Use `/api/create` to create a new model with the updated context size. Call the API with the updated model name:
+
+```shell
+curl http://localhost:11434/api/create -d '{
+  "model": "mymodel",
+  "from": "llama3.2",
+  "parameters": {
+    "num_ctx": 4096
+  },
+  "stream": false
+}'
+```
 
 ```shell
 curl http://localhost:11434/v1/chat/completions \

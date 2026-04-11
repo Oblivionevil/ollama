@@ -240,16 +240,15 @@ curl -X POST http://localhost:11434/v1/messages \
 
 For coding use cases, models like `glm-4.7`, `minimax-m2.1`, and `qwen3-coder` are recommended.
 
-Download a model before use:
+Make a local model available before use:
 
 ```shell
-ollama pull qwen3-coder
+curl http://localhost:11434/api/pull -d '{
+  "model": "qwen3-coder",
+  "stream": false
+}'
 ```
 > Note: Qwen 3 coder is a 30B parameter model requiring at least 24GB of VRAM to run smoothly. More is required for longer context lengths. 
-
-```shell
-ollama pull glm-4.7:cloud
-```
 
 ### Manual setup
 
@@ -336,10 +335,13 @@ Ollama supports both local and cloud models.
 
 ### Local models
 
-Pull a local model before use:
+Make a local model available before use:
 
 ```shell
-ollama pull qwen3-coder
+curl http://localhost:11434/api/pull -d '{
+  "model": "qwen3-coder",
+  "stream": false
+}'
 ```
 
 Recommended local models:
@@ -348,17 +350,20 @@ Recommended local models:
 
 ### Cloud models
 
-Cloud models are available immediately without pulling:
+Cloud models are available immediately after signing in through the Windows app:
 
 - `glm-4.7:cloud` - High-performance cloud model
 - `minimax-m2.1:cloud` - Fast cloud model
 
 ### Default model names
 
-For tooling that relies on default Anthropic model names such as `claude-3-5-sonnet`, use `ollama cp` to copy an existing model name:
+For tooling that relies on default Anthropic model names such as `claude-3-5-sonnet`, use `/api/copy` to copy an existing model name:
 
 ```shell
-ollama cp qwen3-coder claude-3-5-sonnet
+curl http://localhost:11434/api/copy -d '{
+  "source": "qwen3-coder",
+  "destination": "claude-3-5-sonnet"
+}'
 ```
 
 Afterwards, this new model name can be specified in the `model` field:

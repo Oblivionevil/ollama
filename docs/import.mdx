@@ -18,18 +18,28 @@ FROM <base model name>
 ADAPTER /path/to/safetensors/adapter/directory
 ```
 
-Make sure that you use the same base model in the `FROM` command as you used to create the adapter otherwise you will get erratic results. Most frameworks use different quantization methods, so it's best to use non-quantized (i.e. non-QLoRA) adapters. If your adapter is in the same directory as your `Modelfile`, use `ADAPTER .` to specify the adapter path.
+Make sure that you use the same base model in the `FROM` command as you used to create the adapter otherwise you will get erratic results. Most frameworks use different quantization methods, so it's best to use non-quantized (i.e. non-QLoRA) adapters.
 
-Now run `ollama create` from the directory where the `Modelfile` was created:
+Then upload the adapter files with `/api/blobs/:digest` and create the model with the local API:
 
 ```shell
-ollama create my-model
+curl http://localhost:11434/api/create -d '{
+	"model": "my-model",
+	"from": "<base model name>",
+	"adapters": {
+		"adapter.safetensors": "sha256:<adapter digest>"
+	}
+}'
 ```
 
-Lastly, test the model:
+Test the model through the local API:
 
 ```shell
-ollama run my-model
+curl http://localhost:11434/api/chat -d '{
+	"model": "my-model",
+	"messages": [{ "role": "user", "content": "Hello!" }],
+	"stream": false
+}'
 ```
 
 Ollama supports importing adapters based on several different model architectures including:
@@ -54,16 +64,26 @@ FROM /path/to/safetensors/directory
 
 If you create the Modelfile in the same directory as the weights, you can use the command `FROM .`.
 
-Now run the `ollama create` command from the directory where you created the `Modelfile`:
+Then upload the model files with `/api/blobs/:digest` and create the model with the local API:
 
 ```shell
-ollama create my-model
+curl http://localhost:11434/api/create -d '{
+	"model": "my-model",
+	"files": {
+		"config.json": "sha256:<config digest>",
+		"model.safetensors": "sha256:<weights digest>"
+	}
+}'
 ```
 
-Lastly, test the model:
+Test the model through the local API:
 
 ```shell
-ollama run my-model
+curl http://localhost:11434/api/chat -d '{
+	"model": "my-model",
+	"messages": [{ "role": "user", "content": "Hello!" }],
+	"stream": false
+}'
 ```
 
 Ollama supports importing models for several different architectures including:
@@ -102,17 +122,22 @@ When importing a GGUF adapter, it's important to use the same base model as the 
 - a GGUF file
 - a Safetensors based model
 
-Once you have created your `Modelfile`, use the `ollama create` command to build the model.
+Once you have created your `Modelfile`, upload the GGUF file with `/api/blobs/:digest` and build the model with `/api/create`.
 
 ```shell
-ollama create my-model
+curl http://localhost:11434/api/create -d '{
+	"model": "my-model",
+	"files": {
+		"model.gguf": "sha256:<gguf digest>"
+	}
+}'
 ```
 
 ## Quantizing a Model
 
 Quantizing a model allows you to run models faster and with less memory consumption but at reduced accuracy. This allows you to run a model on more modest hardware.
 
-Ollama can quantize FP16 and FP32 based models into different quantization levels using the `-q/--quantize` flag with the `ollama create` command.
+Ollama can quantize FP16 and FP32 based models into different quantization levels using the `quantize` field on `/api/create`.
 
 First, create a Modelfile with the FP16 or FP32 based model you wish to quantize.
 
@@ -120,16 +145,14 @@ First, create a Modelfile with the FP16 or FP32 based model you wish to quantize
 FROM /path/to/my/gemma/f16/model
 ```
 
-Use `ollama create` to then create the quantized model.
+Use `/api/create` to create the quantized model.
 
 ```shell
-$ ollama create --quantize q4_K_M mymodel
-transferring model data
-quantizing F16 model to Q4_K_M
-creating new layer sha256:735e246cc1abfd06e9cdcf95504d6789a6cd1ad7577108a70d9902fef503c1bd
-creating new layer sha256:0853f0ad24e5865173bbf9ffcc7b0f5d56b66fd690ab1009867e45e7d2c4db0f
-writing manifest
-success
+curl http://localhost:11434/api/create -d '{
+	"model": "mymodel",
+	"from": "<fp16-or-fp32-model>",
+	"quantize": "q4_K_M"
+}'
 ```
 
 ### Supported Quantizations
@@ -159,16 +182,17 @@ Follow the directions on the page to determine where your Ollama Public Key is l
 
 Click on the `Add Ollama Public Key` button, and copy and paste the contents of your Ollama Public Key into the text field.
 
-To push a model to [ollama.com](https://ollama.com), first make sure that it is named correctly with your username. You may have to use the `ollama cp` command to copy
-your model to give it the correct name. Once you're happy with your model's name, use the `ollama push` command to push it to [ollama.com](https://ollama.com).
+To push a model to [ollama.com](https://ollama.com), first make sure that it is named correctly with your username. You can rename it with `/api/copy`, then publish it with `/api/push`.
 
 ```shell
-ollama cp mymodel myuser/mymodel
-ollama push myuser/mymodel
+curl http://localhost:11434/api/copy -d '{
+	"source": "mymodel",
+	"destination": "myuser/mymodel"
+}'
+
+curl http://localhost:11434/api/push -d '{
+	"model": "myuser/mymodel"
+}'
 ```
 
-Once your model has been pushed, other users can pull and run it by using the command:
-
-```shell
-ollama run myuser/mymodel
-```
+Once your model has been pushed, other users can download it with `/api/pull` and use it through the local API.

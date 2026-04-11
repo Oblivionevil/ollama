@@ -1104,14 +1104,6 @@ function mlxCuda13 {
     }
 }
 
-function ollama {
-    mkdir -Force -path "${script:DIST_DIR}\" | Out-Null
-    Write-Output "Building ollama CLI"
-    & go build -trimpath -ldflags "-s -w -X=github.com/ollama/ollama/version.Version=$script:VERSION -X=github.com/ollama/ollama/server.mode=release" .
-    if ($LASTEXITCODE -ne 0) { exit($LASTEXITCODE)}
-    cp .\ollama.exe "${script:DIST_DIR}\"
-}
-
 function app {
     Write-Output "Building Ollama App $script:VERSION with package version $script:PKG_VERSION"
 
@@ -1185,26 +1177,10 @@ function app {
     copyVcRuntimeLibraries $script:ARCH $packageDir
 }
 
-function deps {
-    Write-Output "Download MSVC Redistributables"
-    mkdir -Force -path "${script:SRC_DIR}\dist\\windows-arm64" | Out-Null
-    mkdir -Force -path "${script:SRC_DIR}\dist\\windows-amd64" | Out-Null
-    invoke-webrequest -Uri "https://aka.ms/vs/17/release/vc_redist.arm64.exe" -OutFile  "${script:SRC_DIR}\dist\windows-arm64\vc_redist.arm64.exe" -ErrorAction Stop
-    invoke-webrequest -Uri "https://aka.ms/vs/17/release/vc_redist.x64.exe" -OutFile  "${script:SRC_DIR}\dist\windows-amd64\vc_redist.x64.exe" -ErrorAction Stop
-    Write-Output "Done."
-}
-
 function sign {
-    # Copy install.ps1 to dist for release packaging
-    Write-Output "Copying install.ps1 to dist"
-    Copy-Item -Path "${script:SRC_DIR}\scripts\install.ps1" -Destination "${script:SRC_DIR}\dist\install.ps1" -ErrorAction Stop
-
     if (signingEnabled) {
-        Write-Output "Signing Ollama executables, scripts and libraries"
+        Write-Output "Signing Ollama executables and libraries"
         invokeSignTool @((get-childitem -path "${script:SRC_DIR}\dist\windows-*" -r -include @('*.exe', '*.dll') | ForEach-Object { $_.FullName }))
-
-        Write-Output "Signing install.ps1"
-        invokeSignTool @("${script:SRC_DIR}\dist\install.ps1")
     } else {
         Write-Output "Signing not enabled"
     }
@@ -1229,96 +1205,6 @@ function installer {
         & "${script:INNO_SETUP_DIR}\ISCC.exe" /DARCH=$script:TARGET_ARCH .\ollama.iss
     }
     if ($LASTEXITCODE -ne 0) { exit($LASTEXITCODE)}
-}
-
-function newZipJob($sourceDir, $destZip) {
-    $use7z = [bool](Get-Command 7z -ErrorAction SilentlyContinue)
-    Start-Job -ScriptBlock {
-        param($src, $dst, $use7z)
-        if ($use7z) {
-            & 7z a -tzip -mx=9 -mmt=on $dst "${src}\*"
-            if ($LASTEXITCODE -ne 0) { throw "7z failed with exit code $LASTEXITCODE" }
-        } else {
-            Compress-Archive -CompressionLevel Optimal -Path "${src}\*" -DestinationPath $dst -Force
-        }
-    } -ArgumentList $sourceDir, $destZip, $use7z
-}
-
-function stageComponents($mainDir, $stagingDir, $pattern, $readmePrefix) {
-    $components = Get-ChildItem -Path "${mainDir}\lib\ollama" -Directory -Filter $pattern -ErrorAction SilentlyContinue
-    if ($components) {
-        Remove-Item -ea 0 -r $stagingDir
-        mkdir -Force -path "${stagingDir}\lib\ollama" | Out-Null
-        Write-Output "Extract this ${readmePrefix} zip file to the same location where you extracted ollama-windows-amd64.zip" > "${stagingDir}\README_${readmePrefix}.txt"
-        foreach ($dir in $components) {
-            Write-Output "  Staging $($dir.Name)"
-            Move-Item -path $dir.FullName -destination "${stagingDir}\lib\ollama\$($dir.Name)"
-        }
-        return $true
-    }
-    return $false
-}
-
-function restoreComponents($mainDir, $stagingDir) {
-    if (Test-Path -Path "${stagingDir}\lib\ollama") {
-        foreach ($dir in (Get-ChildItem -Path "${stagingDir}\lib\ollama" -Directory)) {
-            Move-Item -path $dir.FullName -destination "${mainDir}\lib\ollama\$($dir.Name)"
-        }
-    }
-    Remove-Item -ea 0 -r $stagingDir
-}
-
-function zip {
-    $jobs = @()
-    $distDir = "${script:SRC_DIR}\dist"
-    $amd64Dir = "${distDir}\windows-amd64"
-
-    # Remove any stale zip files before starting
-    Remove-Item -ea 0 "${distDir}\ollama-windows-*.zip"
-
-    try {
-        if (Test-Path -Path $amd64Dir) {
-            # Stage ROCm into its own directory for independent compression
-            if (stageComponents $amd64Dir "${distDir}\windows-amd64-rocm" "rocm*" "ROCm") {
-                Write-Output "Generating ${distDir}\ollama-windows-amd64-rocm.zip"
-                $jobs += newZipJob "${distDir}\windows-amd64-rocm" "${distDir}\ollama-windows-amd64-rocm.zip"
-            }
-
-            # Stage MLX into its own directory for independent compression
-            if (stageComponents $amd64Dir "${distDir}\windows-amd64-mlx" "mlx_*" "MLX") {
-                Write-Output "Generating ${distDir}\ollama-windows-amd64-mlx.zip"
-                $jobs += newZipJob "${distDir}\windows-amd64-mlx" "${distDir}\ollama-windows-amd64-mlx.zip"
-            }
-
-            # Compress the main amd64 zip (without rocm/mlx)
-            Write-Output "Generating ${distDir}\ollama-windows-amd64.zip"
-            $jobs += newZipJob $amd64Dir "${distDir}\ollama-windows-amd64.zip"
-        }
-
-        if (Test-Path -Path "${distDir}\windows-arm64") {
-            Write-Output "Generating ${distDir}\ollama-windows-arm64.zip"
-            $jobs += newZipJob "${distDir}\windows-arm64" "${distDir}\ollama-windows-arm64.zip"
-        }
-
-        if ($jobs.Count -gt 0) {
-            Write-Output "Waiting for $($jobs.Count) parallel zip jobs..."
-            $jobs | Wait-Job | Out-Null
-            $failed = $false
-            foreach ($job in $jobs) {
-                if ($job.State -eq 'Failed') {
-                    Write-Error "Zip job failed: $($job.ChildJobs[0].JobStateInfo.Reason)"
-                    $failed = $true
-                }
-                Receive-Job $job
-                Remove-Job $job
-            }
-            if ($failed) { throw "One or more zip jobs failed" }
-        }
-    } finally {
-        # Always restore staged components back into the main tree
-        restoreComponents $amd64Dir "${distDir}\windows-amd64-rocm"
-        restoreComponents $amd64Dir "${distDir}\windows-amd64-mlx"
-    }
 }
 
 function clean {
