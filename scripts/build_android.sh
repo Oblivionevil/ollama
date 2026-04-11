@@ -72,7 +72,6 @@ go get "golang.org/x/mobile/bind@$GOMOBILE_VERSION"
 go install "golang.org/x/mobile/cmd/gomobile@$GOMOBILE_VERSION"
 go install "golang.org/x/mobile/cmd/gobind@$GOMOBILE_VERSION"
 export PATH="$(go env GOPATH)/bin:$PATH"
-gomobile init
 
 mkdir -p "$(dirname "$AAR_OUTPUT")"
 
