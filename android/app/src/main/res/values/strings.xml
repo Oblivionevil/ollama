@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Ollama</string>
+    <string name="notification_channel_name">Ollama Server</string>
+    <string name="notification_channel_description">Keeps the Ollama server running</string>
+</resources>

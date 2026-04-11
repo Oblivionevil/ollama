@@ -1,4 +1,4 @@
-//go:build windows || darwin
+//go:build windows || darwin || android
 
 // package ui implements a chat interface for Ollama
 package ui

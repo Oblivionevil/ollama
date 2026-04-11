@@ -68,6 +68,64 @@ jobs:
           name: build-windows-${{ matrix.arch }}
           path: dist/*
 
+  android-build:
+    needs: setup
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.setup.outputs.version }}
+      APP_VERSION_NAME: ${{ needs.setup.outputs.version }}
+      APP_VERSION_CODE: ${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.setup.outputs.release_tag }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.11.1
+      - name: Install Android SDK components
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME}}"
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018"
+          echo "ANDROID_NDK_HOME=${sdk_root}/ndk/27.2.12479018" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=${sdk_root}/ndk/27.2.12479018" >> "$GITHUB_ENV"
+      - name: Install gomobile
+        shell: bash
+        run: |
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          go install golang.org/x/mobile/cmd/gobind@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: Initialize gomobile
+        shell: bash
+        run: |
+          export PATH="$(go env GOPATH)/bin:$PATH"
+          gomobile init
+      - name: Build Android APK
+        shell: bash
+        run: |
+          chmod +x ./scripts/build_android.sh
+          export PATH="$(go env GOPATH)/bin:$PATH"
+          ./scripts/build_android.sh debug
+          mkdir -p dist
+          cp android/app/build/outputs/apk/debug/app-debug.apk dist/Ollama-android-debug.apk
+      - uses: actions/upload-artifact@v7
+        with:
+          name: bundles-android
+          path: dist/Ollama-android-debug.apk
+
   windows-package:
     needs: [setup, windows-build]
     runs-on: windows-2022
@@ -158,7 +216,7 @@ jobs:
             dist/*.appinstaller
 
   release:
-    needs: [setup, windows-package]
+    needs: [setup, windows-package, android-build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -204,7 +262,7 @@ jobs:
         shell: bash
         run: |
           RELEASE_TAG="${{ needs.setup.outputs.release_tag }}"
-          for payload in dist/windows-ollama-app-*.exe dist/OllamaSetup.exe dist/*.msix dist/*.msixbundle dist/*.appinstaller; do
+          for payload in dist/windows-ollama-app-*.exe dist/OllamaSetup.exe dist/*.msix dist/*.msixbundle dist/*.appinstaller dist/*.apk; do
             [ -e "$payload" ] || continue
             gh release upload "$RELEASE_TAG" "$payload" --clobber
           done
