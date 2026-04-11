@@ -40,14 +40,14 @@ jobs:
     env:
       VERSION: ${{ needs.setup.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ needs.setup.outputs.release_tag }}
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: '20'
       - name: Install compiler toolchain
@@ -63,7 +63,7 @@ jobs:
         run: |
           $env:ARCH='${{ matrix.arch }}'
           ./scripts/build_windows.ps1 app
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: build-windows-${{ matrix.arch }}
           path: dist/*
@@ -78,14 +78,14 @@ jobs:
       APPINSTALLER_BASE_URI: ${{ vars.APPINSTALLER_BASE_URI != '' && vars.APPINSTALLER_BASE_URI || format('https://github.com/{0}/releases/download/{1}', github.repository, needs.setup.outputs.release_tag) }}
       SIGN_TIMESTAMP_URL: ${{ vars.SIGN_TIMESTAMP_URL != '' && vars.SIGN_TIMESTAMP_URL || 'http://timestamp.digicert.com' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ needs.setup.outputs.release_tag }}
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache-dependency-path: go.sum
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: build-windows-*
           path: dist
@@ -147,7 +147,7 @@ jobs:
         shell: pwsh
         run: |
           ./scripts/build_windows.ps1 sign installer appinstaller
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: bundles-windows
           path: |
@@ -165,10 +165,10 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ needs.setup.outputs.release_tag }}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: bundles-*
           path: dist
