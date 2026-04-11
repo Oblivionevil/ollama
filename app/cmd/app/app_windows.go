@@ -16,7 +16,6 @@ import (
 	"syscall"
 	"unsafe"
 
-	"github.com/ollama/ollama/app/updater"
 	"github.com/ollama/ollama/app/version"
 	"github.com/ollama/ollama/app/wintray"
 	"golang.org/x/sys/windows"
@@ -65,8 +64,7 @@ func handleExistingInstance(startHidden bool) {
 func installSymlink() {}
 
 type appCallbacks struct {
-	t        wintray.TrayCallbacks
-	shutdown func()
+	t wintray.TrayCallbacks
 }
 
 var app = &appCallbacks{}
@@ -101,17 +99,6 @@ func quit() {
 	wv.Terminate()
 }
 
-func (app *appCallbacks) DoUpdate() {
-	// Safeguard in case we have requests in flight that need to drain...
-	slog.Info("Waiting for server to shutdown")
-
-	app.shutdown()
-
-	if err := updater.DoUpgrade(true); err != nil {
-		slog.Warn(fmt.Sprintf("upgrade attempt failed: %s", err))
-	}
-}
-
 // HandleURLScheme implements the URLSchemeHandler interface
 func (app *appCallbacks) HandleURLScheme(urlScheme string) {
 	handleURLSchemeRequest(urlScheme)
@@ -134,28 +121,11 @@ func handleURLSchemeRequest(urlScheme string) {
 	}
 }
 
-func UpdateAvailable(ver string) error {
-	if app.t == nil {
-		slog.Debug("tray not yet initialized, skipping update notification")
-		return nil
-	}
-	return app.t.UpdateAvailable(ver)
-}
-
-func osRun(shutdown func(), hasCompletedFirstRun, startHidden bool) {
+func osRun(_ func(), hasCompletedFirstRun, startHidden bool) {
 	var err error
-	app.shutdown = shutdown
 	app.t, err = wintray.NewTray(app)
 	if err != nil {
 		log.Fatalf("Failed to start: %s", err)
-	}
-
-	// Check for pending updates now that the tray is initialized.
-	// The platform-independent check in app.go fires before osRun,
-	// when app.t is still nil, so we must re-check here.
-	if updater.IsUpdatePending() {
-		slog.Debug("update pending on startup, showing tray notification")
-		UpdateAvailable("")
 	}
 
 	signals := make(chan os.Signal, 1)
@@ -260,7 +230,7 @@ func LaunchNewApp() {
 }
 
 func logStartup() {
-	slog.Info("starting Ollama", "app", appPath, "version", version.Version, "OS", updater.UserAgentOS)
+	slog.Info("starting Ollama", "app", appPath, "version", version.Version, "OS", "Windows")
 }
 
 const (

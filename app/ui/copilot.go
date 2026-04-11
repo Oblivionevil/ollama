@@ -25,13 +25,13 @@ import (
 )
 
 const (
-	defaultGitHubOAuthClientID   = "01ab8ac9400c4e429b23"
-	defaultCopilotPluginVersion  = "copilot-chat/0.42.3"
-	defaultCopilotEditorVersion  = "vscode/1.101.0"
-	defaultCopilotIntegrationID  = "code-oss"
+	defaultGitHubOAuthClientID  = "01ab8ac9400c4e429b23"
+	defaultCopilotPluginVersion = "copilot-chat/0.42.3"
+	defaultCopilotEditorVersion = "vscode/1.101.0"
+	defaultCopilotIntegrationID = "code-oss"
 
-	githubAPIVersion  = "2022-11-28"
-	copilotAPIVersion = "2025-10-01"
+	githubAPIVersion    = "2022-11-28"
+	copilotAPIVersion   = "2025-10-01"
 	copilotAuthProvider = "github-copilot"
 
 	copilotModelCacheTTL = 5 * time.Minute
@@ -708,7 +708,7 @@ func (s *Server) copilotAuthorizedSession(ctx context.Context) (*store.AuthSessi
 func (s *Server) copilotCreateDeviceFlow(ctx context.Context) (*copilotDeviceFlow, error) {
 	values := url.Values{}
 	values.Set("client_id", s.copilotOAuthClientID())
-	values.Set("scope", "read:user user:email")
+	values.Set("scope", "repo read:user user:email")
 
 	headers := map[string]string{
 		"Accept":     "application/json",

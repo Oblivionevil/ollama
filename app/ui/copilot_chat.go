@@ -296,10 +296,10 @@ func (s *Server) copilotResponsesInput(chat *store.Chat) (string, []map[string]a
 func (s *Server) copilotResponsesRequestBody(chat *store.Chat, meta copilotModelMetadata, think any) map[string]any {
 	instructions, input := s.copilotResponsesInput(chat)
 	body := map[string]any{
-		"model": meta.ID,
-		"input": input,
-		"store": false,
-		"stream": true,
+		"model":   meta.ID,
+		"input":   input,
+		"store":   false,
+		"stream":  true,
 		"include": []string{"reasoning.encrypted_content"},
 	}
 	if instructions != "" {
@@ -722,5 +722,9 @@ func (s *Server) chatCopilot(ctx context.Context, w http.ResponseWriter, flusher
 		chat.Messages[len(chat.Messages)-1].Stream = false
 	}
 
-	return s.Store.SetChat(*chat)
+	if err := s.Store.SetChat(*chat); err != nil {
+		return err
+	}
+	s.syncChatToGitHubBestEffort(ctx, *chat)
+	return nil
 }

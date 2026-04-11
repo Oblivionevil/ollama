@@ -19,6 +19,7 @@ export default function Thinking({
 
   const activelyThinking = startTime && !endTime;
   const finishedThinking = startTime && endTime;
+  const hasThinkingContent = thinking.trim().length > 0;
 
   // Auto-collapse when thinking is done (only if user hasn't manually interacted)
   useEffect(() => {
@@ -142,32 +143,34 @@ export default function Thinking({
               : "Thinking..."}
         </h3>
       </div>
-      <div
-        ref={wrapperRef}
-        className={`text-xs text-neutral-500 dark:text-neutral-500 rounded-md
+      {hasThinkingContent && (
+        <div
+          ref={wrapperRef}
+          className={`text-xs text-neutral-500 dark:text-neutral-500 rounded-md
           transition-[max-height,opacity] duration-300 ease-in-out relative ml-6 mt-2
           ${isCollapsed ? "overflow-hidden" : "overflow-y-auto"}`}
-        style={{
-          maxHeight: isCollapsed ? getMaxHeight() : undefined,
-          opacity: isCollapsed && finishedThinking ? 0 : 1,
-        }}
-      >
-        <div
-          ref={contentRef}
-          className="transition-transform duration-300 opacity-75 select-text"
+          style={{
+            maxHeight: isCollapsed ? getMaxHeight() : undefined,
+            opacity: isCollapsed && finishedThinking ? 0 : 1,
+          }}
         >
-          <StreamingMarkdownContent
-            content={thinking}
-            isStreaming={activelyThinking}
-            size="sm"
-          />
-        </div>
+          <div
+            ref={contentRef}
+            className="transition-transform duration-300 opacity-75 select-text"
+          >
+            <StreamingMarkdownContent
+              content={thinking}
+              isStreaming={activelyThinking}
+              size="sm"
+            />
+          </div>
 
-        {/* Gradient overlay for fade effect when collapsed and scrolled */}
-        {isCollapsed && hasOverflow && (
-          <div className="absolute inset-x-0 -top-1 h-8 pointer-events-none bg-gradient-to-b from-white dark:from-neutral-900 to-transparent" />
-        )}
-      </div>
+          {/* Gradient overlay for fade effect when collapsed and scrolled */}
+          {isCollapsed && hasOverflow && (
+            <div className="absolute inset-x-0 -top-1 h-8 pointer-events-none bg-gradient-to-b from-white dark:from-neutral-900 to-transparent" />
+          )}
+        </div>
+      )}
     </div>
   );
 }

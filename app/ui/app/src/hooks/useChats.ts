@@ -192,6 +192,50 @@ export const useIsWaitingForLoad = (chatId: string) => {
   return isWaitingForLoad && !isSameModel;
 };
 
+const shouldUseThinkingPlaceholder = (think?: boolean | string) => {
+  if (typeof think === "string") {
+    return think.trim().length > 0;
+  }
+
+  return think === true;
+};
+
+const isEmptyAssistantPlaceholder = (message?: Message) => {
+  if (!message || message.role !== "assistant") {
+    return false;
+  }
+
+  return (
+    !message.content?.trim() &&
+    !message.thinking?.trim() &&
+    (!message.tool_calls || message.tool_calls.length === 0) &&
+    !message.tool_call
+  );
+};
+
+const appendThinkingPlaceholder = (messages: Message[]) => [
+  ...messages,
+  new Message({
+    role: "assistant",
+    content: "",
+    thinking: "",
+    thinkingTimeStart: new Date(),
+  }),
+];
+
+const removeTrailingEmptyAssistantPlaceholder = (messages: Message[]) => {
+  if (messages.length === 0) {
+    return messages;
+  }
+
+  const newMessages = [...messages];
+  if (isEmptyAssistantPlaceholder(newMessages[newMessages.length - 1])) {
+    newMessages.pop();
+  }
+
+  return newMessages;
+};
+
 export const useSendMessage = (chatId: string) => {
   let updatableChatId = chatId;
   const queryClient = useQueryClient();
@@ -229,6 +273,22 @@ export const useSendMessage = (chatId: string) => {
     },
     onError: (error) => {
       console.error("error mutating sendMessage", error);
+      queryClient.setQueryData(
+        ["chat", updatableChatId],
+        (old: { chat: Chat } | undefined) => {
+          if (!old) return old;
+
+          return {
+            ...old,
+            chat: new Chat({
+              ...old.chat,
+              messages: removeTrailingEmptyAssistantPlaceholder(
+                old.chat.messages || [],
+              ),
+            }),
+          };
+        },
+      );
       cleanupStreaming(updatableChatId);
     },
     mutationFn: async ({
@@ -250,6 +310,8 @@ export const useSendMessage = (chatId: string) => {
       think?: boolean | string;
       onChatEvent?: (event: ChatEventUnion) => void;
     }) => {
+      const useThinkingPlaceholder = shouldUseThinkingPlaceholder(think);
+
       // For existing chats, set streaming state and add optimistic user message
       if (chatId !== "new") {
         setStreamingChatIds((prev: Set<string>) => {
@@ -284,11 +346,15 @@ export const useSendMessage = (chatId: string) => {
                 messages = messages.slice(0, index);
               }
 
+              const nextMessages = [...messages, newMessage];
+
               return {
                 ...old,
                 chat: new Chat({
                   ...old.chat,
-                  messages: [...messages, newMessage],
+                  messages: useThinkingPlaceholder
+                    ? appendThinkingPlaceholder(nextMessages)
+                    : nextMessages,
                 }),
               };
             },
@@ -637,6 +703,23 @@ export const useSendMessage = (chatId: string) => {
               return newMap;
             });
 
+            queryClient.setQueryData(
+              ["chat", currentChatId],
+              (old: { chat: Chat } | undefined) => {
+                if (!old) return old;
+
+                return {
+                  ...old,
+                  chat: new Chat({
+                    ...old.chat,
+                    messages: removeTrailingEmptyAssistantPlaceholder(
+                      old.chat.messages || [],
+                    ),
+                  }),
+                };
+              },
+            );
+
             // Set error using separate React Query cache
             queryClient.setQueryData(
               ["chatError", currentChatId],
@@ -698,13 +781,21 @@ export const useSendMessage = (chatId: string) => {
               chat: new Chat({
                 id: newId,
                 model: effectiveModel,
-                messages: [
-                  new Message({
-                    role: "user",
-                    content: message,
-                    attachments: attachments,
-                  }),
-                ],
+                messages: useThinkingPlaceholder
+                  ? appendThinkingPlaceholder([
+                      new Message({
+                        role: "user",
+                        content: message,
+                        attachments: attachments,
+                      }),
+                    ])
+                  : [
+                      new Message({
+                        role: "user",
+                        content: message,
+                        attachments: attachments,
+                      }),
+                    ],
               }),
             });
 
@@ -735,6 +826,7 @@ export const useCancelMessage = () => {
     setAbortControllers,
     setDownloadProgress,
   } = useStreamingContext();
+  const queryClient = useQueryClient();
 
   return (chatId: string) => {
     const controller = abortControllers.get(chatId);
@@ -753,6 +845,22 @@ export const useCancelMessage = () => {
         newMap.delete(chatId);
         return newMap;
       });
+      queryClient.setQueryData(
+        ["chat", chatId],
+        (old: { chat: Chat } | undefined) => {
+          if (!old) return old;
+
+          return {
+            ...old,
+            chat: new Chat({
+              ...old.chat,
+              messages: removeTrailingEmptyAssistantPlaceholder(
+                old.chat.messages || [],
+              ),
+            }),
+          };
+        },
+      );
     }
   };
 };

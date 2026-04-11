@@ -415,7 +415,6 @@ export class Settings {
     SelectedModel: string;
     SidebarOpen: boolean;
     LastHomeView: string;
-    AutoUpdateEnabled: boolean;
 
     constructor(source: any = {}) {
         if ('string' === typeof source) source = JSON.parse(source);
@@ -434,7 +433,6 @@ export class Settings {
         this.SelectedModel = source["SelectedModel"];
         this.SidebarOpen = source["SidebarOpen"];
         this.LastHomeView = source["LastHomeView"];
-        this.AutoUpdateEnabled = source["AutoUpdateEnabled"];
     }
 }
 export class SettingsResponse {

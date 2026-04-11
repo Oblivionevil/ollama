@@ -17,7 +17,6 @@ import (
 
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/app/store"
-	"github.com/ollama/ollama/app/updater"
 )
 
 func TestHandlePostApiSettings(t *testing.T) {
@@ -138,6 +137,65 @@ func TestHandleGetApiHealth(t *testing.T) {
 	if got["ok"] != true {
 		t.Fatalf("response ok = %v, want true", got["ok"])
 	}
+}
+
+func TestAppHandlerDesktopOnlyAccess(t *testing.T) {
+	t.Run("blocks browser requests without desktop token", func(t *testing.T) {
+		server := &Server{Token: "desktop-token"}
+		req := httptest.NewRequest("GET", "/c/new", nil)
+		rr := httptest.NewRecorder()
+
+		server.appHandler().ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want %d", rr.Code, http.StatusForbidden)
+		}
+		if !strings.Contains(rr.Body.String(), "Desktop UI is only available inside the app") {
+			t.Fatalf("body = %q, want desktop-only error", rr.Body.String())
+		}
+	})
+
+	t.Run("accepts one-time desktop token and strips it from the URL", func(t *testing.T) {
+		server := &Server{Token: "desktop-token"}
+		req := httptest.NewRequest("GET", "/c/new?token=desktop-token&foo=bar", nil)
+		rr := httptest.NewRecorder()
+
+		server.appHandler().ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusFound {
+			t.Fatalf("status = %d, want %d", rr.Code, http.StatusFound)
+		}
+		if location := rr.Header().Get("Location"); location != "/c/new?foo=bar" {
+			t.Fatalf("location = %q, want %q", location, "/c/new?foo=bar")
+		}
+
+		cookies := rr.Result().Cookies()
+		if len(cookies) != 1 {
+			t.Fatalf("cookies = %d, want 1", len(cookies))
+		}
+		if cookies[0].Name != "token" || cookies[0].Value != "desktop-token" {
+			t.Fatalf("cookie = %+v, want token cookie", cookies[0])
+		}
+		if !cookies[0].HttpOnly {
+			t.Fatalf("cookie HttpOnly = false, want true")
+		}
+	})
+
+	t.Run("allows app shell with desktop cookie", func(t *testing.T) {
+		server := &Server{Token: "desktop-token"}
+		req := httptest.NewRequest("GET", "/c/new", nil)
+		req.AddCookie(&http.Cookie{Name: "token", Value: "desktop-token"})
+		rr := httptest.NewRecorder()
+
+		server.appHandler().ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d", rr.Code, http.StatusOK)
+		}
+		if rr.Body.Len() == 0 {
+			t.Fatal("body is empty, want app shell")
+		}
+	})
 }
 
 func TestAuthenticationMiddleware(t *testing.T) {
@@ -578,185 +636,5 @@ func TestWebSearchToolRegistration(t *testing.T) {
 				t.Error("unexpected web search tools registered")
 			}
 		})
-	}
-}
-
-func TestSettingsToggleAutoUpdateOff_CancelsDownload(t *testing.T) {
-	testStore := &store.Store{
-		DBPath: filepath.Join(t.TempDir(), "db.sqlite"),
-	}
-	defer testStore.Close()
-
-	// Start with auto-update enabled
-	settings, err := testStore.Settings()
-	if err != nil {
-		t.Fatal(err)
-	}
-	settings.AutoUpdateEnabled = true
-	if err := testStore.SetSettings(settings); err != nil {
-		t.Fatal(err)
-	}
-
-	upd := &updater.Updater{Store: &store.Store{
-		DBPath: filepath.Join(t.TempDir(), "db2.sqlite"),
-	}}
-	defer upd.Store.Close()
-
-	// We can't easily mock CancelOngoingDownload, but we can verify
-	// the full settings handler flow works without error
-	server := &Server{
-		Store:   testStore,
-		Restart: func() {},
-		Updater: upd,
-	}
-
-	// Disable auto-update via settings API
-	settings.AutoUpdateEnabled = false
-	body, err := json.Marshal(settings)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	req := httptest.NewRequest("POST", "/api/v1/settings", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	rr := httptest.NewRecorder()
-
-	if err := server.settings(rr, req); err != nil {
-		t.Fatalf("settings() error = %v", err)
-	}
-	if rr.Code != http.StatusOK {
-		t.Fatalf("settings() status = %d, want %d", rr.Code, http.StatusOK)
-	}
-
-	// Verify settings were saved with auto-update disabled
-	saved, err := testStore.Settings()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if saved.AutoUpdateEnabled {
-		t.Fatal("expected AutoUpdateEnabled to be false after toggle off")
-	}
-}
-
-func TestSettingsToggleAutoUpdateOn_WithPendingUpdate_ShowsNotification(t *testing.T) {
-	testStore := &store.Store{
-		DBPath: filepath.Join(t.TempDir(), "db.sqlite"),
-	}
-	defer testStore.Close()
-
-	// Start with auto-update disabled
-	settings, err := testStore.Settings()
-	if err != nil {
-		t.Fatal(err)
-	}
-	settings.AutoUpdateEnabled = false
-	if err := testStore.SetSettings(settings); err != nil {
-		t.Fatal(err)
-	}
-
-	// Simulate that an update was previously downloaded
-	oldVal := updater.UpdateDownloaded
-	updater.UpdateDownloaded = true
-	defer func() { updater.UpdateDownloaded = oldVal }()
-
-	var notificationCalled atomic.Bool
-	server := &Server{
-		Store:   testStore,
-		Restart: func() {},
-		UpdateAvailableFunc: func() {
-			notificationCalled.Store(true)
-		},
-	}
-
-	// Re-enable auto-update via settings API
-	settings.AutoUpdateEnabled = true
-	body, err := json.Marshal(settings)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	req := httptest.NewRequest("POST", "/api/v1/settings", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	rr := httptest.NewRecorder()
-
-	if err := server.settings(rr, req); err != nil {
-		t.Fatalf("settings() error = %v", err)
-	}
-	if rr.Code != http.StatusOK {
-		t.Fatalf("settings() status = %d, want %d", rr.Code, http.StatusOK)
-	}
-
-	if !notificationCalled.Load() {
-		t.Fatal("expected UpdateAvailableFunc to be called when re-enabling with a downloaded update")
-	}
-}
-
-func TestSettingsToggleAutoUpdateOn_NoPendingUpdate_TriggersCheck(t *testing.T) {
-	testStore := &store.Store{
-		DBPath: filepath.Join(t.TempDir(), "db.sqlite"),
-	}
-	defer testStore.Close()
-
-	// Start with auto-update disabled
-	settings, err := testStore.Settings()
-	if err != nil {
-		t.Fatal(err)
-	}
-	settings.AutoUpdateEnabled = false
-	if err := testStore.SetSettings(settings); err != nil {
-		t.Fatal(err)
-	}
-
-	// Ensure no pending update - clear both the downloaded flag and the stage dir
-	oldVal := updater.UpdateDownloaded
-	updater.UpdateDownloaded = false
-	defer func() { updater.UpdateDownloaded = oldVal }()
-
-	oldStageDir := updater.UpdateStageDir
-	updater.UpdateStageDir = t.TempDir() // empty dir means IsUpdatePending() returns false
-	defer func() { updater.UpdateStageDir = oldStageDir }()
-
-	upd := &updater.Updater{Store: &store.Store{
-		DBPath: filepath.Join(t.TempDir(), "db2.sqlite"),
-	}}
-	defer upd.Store.Close()
-
-	// Initialize the checkNow channel by starting (and immediately stopping) the checker
-	// so TriggerImmediateCheck doesn't panic on nil channel
-	ctx, cancel := context.WithCancel(t.Context())
-	upd.StartBackgroundUpdaterChecker(ctx, func(string) error { return nil })
-	defer cancel()
-
-	var notificationCalled atomic.Bool
-	server := &Server{
-		Store:   testStore,
-		Restart: func() {},
-		Updater: upd,
-		UpdateAvailableFunc: func() {
-			notificationCalled.Store(true)
-		},
-	}
-
-	// Re-enable auto-update via settings API
-	settings.AutoUpdateEnabled = true
-	body, err := json.Marshal(settings)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	req := httptest.NewRequest("POST", "/api/v1/settings", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	rr := httptest.NewRecorder()
-
-	if err := server.settings(rr, req); err != nil {
-		t.Fatalf("settings() error = %v", err)
-	}
-	if rr.Code != http.StatusOK {
-		t.Fatalf("settings() status = %d, want %d", rr.Code, http.StatusOK)
-	}
-
-	// UpdateAvailableFunc should NOT be called since there's no pending update
-	if notificationCalled.Load() {
-		t.Fatal("UpdateAvailableFunc should not be called when there is no pending update")
 	}
 }

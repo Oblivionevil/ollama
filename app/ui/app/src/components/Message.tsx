@@ -890,6 +890,12 @@ function OtherRoleMessage({
   lastToolQuery?: string;
 }) {
   const messageRef = useRef<HTMLDivElement>(null);
+  const shouldRenderThinking =
+    message.role === "assistant" &&
+    (Boolean(message.thinking?.trim()) ||
+      (isStreaming &&
+        Boolean(message.thinkingTimeStart) &&
+        !message.content?.trim()));
 
   return (
     <div
@@ -897,9 +903,9 @@ function OtherRoleMessage({
     >
       <div className="flex-1 flex flex-col justify-start relative group max-w-none text-wrap break-words">
         {/* Thinking area */}
-        {message.thinking && (
+        {shouldRenderThinking && (
           <Thinking
-            thinking={message.thinking}
+            thinking={message.thinking || ""}
             startTime={message.thinkingTimeStart}
             endTime={message.thinkingTimeEnd}
           />

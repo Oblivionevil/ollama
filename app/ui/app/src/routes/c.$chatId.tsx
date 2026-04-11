@@ -1,18 +1,24 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, redirect } from "@tanstack/react-router";
 import { useChat } from "@/hooks/useChats";
 import Chat from "@/components/Chat";
 import { getChat } from "@/api";
 import { SidebarLayout } from "@/components/layout/layout";
 import { ChatSidebar } from "@/components/ChatSidebar";
-import LaunchCommands from "@/components/LaunchCommands";
 import { useEffect } from "react";
 import { useSettings } from "@/hooks/useSettings";
 
 export const Route = createFileRoute("/c/$chatId")({
   component: RouteComponent,
   loader: async ({ context, params }) => {
+    if (params.chatId === "launch") {
+      throw redirect({
+        to: "/c/$chatId",
+        params: { chatId: "new" },
+      });
+    }
+
     // Skip loading for special non-chat views
-    if (params.chatId !== "new" && params.chatId !== "launch") {
+    if (params.chatId !== "new") {
       context.queryClient.ensureQueryData({
         queryKey: ["chat", params.chatId],
         queryFn: () => getChat(params.chatId),
@@ -31,24 +37,10 @@ function RouteComponent() {
     data: chatData,
     isLoading: chatLoading,
     error: chatError,
-  } = useChat(chatId === "new" || chatId === "launch" ? "" : chatId);
+  } = useChat(chatId === "new" ? "" : chatId);
 
   useEffect(() => {
     if (!settingsData) {
-      return;
-    }
-
-    if (chatId === "launch") {
-      if (
-        settingsData.LastHomeView !== "chat" &&
-        settingsData.LastHomeView !== "launch"
-      ) {
-        return;
-      }
-
-      setSettings({ LastHomeView: "openclaw" }).catch(() => {
-        // Best effort persistence for home view preference.
-      });
       return;
     }
 
@@ -66,14 +58,6 @@ function RouteComponent() {
     return (
       <SidebarLayout sidebar={<ChatSidebar currentChatId={chatId} />}>
         <Chat chatId={chatId} />
-      </SidebarLayout>
-    );
-  }
-
-  if (chatId === "launch") {
-    return (
-      <SidebarLayout sidebar={<ChatSidebar currentChatId={chatId} />}>
-        <LaunchCommands />
       </SidebarLayout>
     );
   }

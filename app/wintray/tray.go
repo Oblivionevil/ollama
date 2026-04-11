@@ -19,28 +19,22 @@ import (
 )
 
 const (
-	UpdateIconName = "tray_upgrade.ico"
-	IconName       = "tray.ico"
-	ClassName      = "OllamaClass"
+	IconName  = "tray.ico"
+	ClassName = "OllamaClass"
 )
 
 func NewTray(app AppCallbacks) (TrayCallbacks, error) {
-	updateIcon, err := assets.GetIcon(UpdateIconName)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load icon %s: %w", UpdateIconName, err)
-	}
 	icon, err := assets.GetIcon(IconName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load icon %s: %w", IconName, err)
 	}
 
-	return InitTray(icon, updateIcon, app)
+	return InitTray(icon, app)
 }
 
 type TrayCallbacks interface {
 	Quit()
 	TrayRun()
-	UpdateAvailable(ver string) error
 	GetIconHandle() windows.Handle
 }
 
@@ -50,7 +44,6 @@ type AppCallbacks interface {
 	UITerminate()
 	UIRunning() bool
 	Quit()
-	DoUpdate()
 }
 
 type URLSchemeHandler interface {
@@ -91,10 +84,7 @@ type winTray struct {
 	wmSystrayMessage,
 	wmTaskbarCreated uint32
 
-	pendingUpdate  bool
-	updateNotified bool // Only pop up the notification once - TODO consider daily nag?
-	normalIcon     []byte
-	updateIcon     []byte
+	normalIcon []byte
 
 	// TODO clean up exit handling
 	quitting bool
@@ -104,9 +94,8 @@ type winTray struct {
 
 var wt winTray
 
-func InitTray(icon, updateIcon []byte, app AppCallbacks) (*winTray, error) {
+func InitTray(icon []byte, app AppCallbacks) (*winTray, error) {
 	wt.normalIcon = icon
-	wt.updateIcon = updateIcon
 	wt.app = app
 	if err := wt.initInstance(); err != nil {
 		return nil, fmt.Errorf("Unable to init instance: %w\n", err)

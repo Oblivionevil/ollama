@@ -76,8 +76,6 @@ func (t *winTray) wndProc(hWnd windows.Handle, message uint32, wParam, lParam ui
 		switch menuItemId {
 		case quitMenuID:
 			t.app.Quit()
-		case updateMenuID:
-			t.app.DoUpdate()
 		case openUIMenuID:
 			// UI must be initialized on this thread so don't use the callbacks
 			t.app.UIShow()
@@ -130,11 +128,6 @@ func (t *winTray) wndProc(hWnd windows.Handle, message uint32, wParam, lParam ui
 			err := t.showMenu()
 			if err != nil {
 				slog.Error(fmt.Sprintf("failed to show menu: %s", err))
-			}
-		case 0x405: // TODO - how is this magic value derived for the notification left click
-			if t.pendingUpdate {
-				// TODO - revamp how detecting an update is notified to the user
-				t.app.DoUpdate()
 			}
 		case 0x404: // Middle click or close notification
 			// slog.Debug("doing nothing on close of first time notification")

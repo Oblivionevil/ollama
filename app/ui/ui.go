@@ -25,7 +25,6 @@ import (
 	"github.com/ollama/ollama/app/tools"
 	"github.com/ollama/ollama/app/types/not"
 	"github.com/ollama/ollama/app/ui/responses"
-	"github.com/ollama/ollama/app/updater"
 	"github.com/ollama/ollama/app/version"
 	"github.com/ollama/ollama/envconfig"
 	_ "github.com/tkrajina/typescriptify-golang-structs/typescriptify"
@@ -90,22 +89,20 @@ const (
 )
 
 type Server struct {
-	Logger       *slog.Logger
-	Restart      func()
-	Token        string
-	Store        *store.Store
-	ToolRegistry *tools.Registry
-	Tools        bool   // if true, the server will use single-turn tools to fulfill the user's request
-	WebSearch    bool   // if true, the server will use single-turn browser tool to fulfill the user's request
-	Agent        bool   // if true, the server will use multi-turn tools to fulfill the user's request
-	WorkingDir   string // Working directory for all agent operations
+	Logger           *slog.Logger
+	Restart          func()
+	Token            string
+	Store            *store.Store
+	githubChatRepo   string
+	githubAPIBaseURL string
+	ToolRegistry     *tools.Registry
+	Tools            bool   // if true, the server will use single-turn tools to fulfill the user's request
+	WebSearch        bool   // if true, the server will use single-turn browser tool to fulfill the user's request
+	Agent            bool   // if true, the server will use multi-turn tools to fulfill the user's request
+	WorkingDir       string // Working directory for all agent operations
 
 	// Dev is true if the server is running in development mode
 	Dev bool
-
-	// Updater for checking and downloading updates
-	Updater             *updater.Updater
-	UpdateAvailableFunc func()
 
 	copilotStateMu        sync.Mutex
 	copilotSessionIDValue string
@@ -373,11 +370,9 @@ func (s *Server) createChat(w http.ResponseWriter, r *http.Request) error {
 }
 
 func (s *Server) listChats(w http.ResponseWriter, r *http.Request) error {
-	chats, _ := s.Store.Chats()
-
-	chatInfos := make([]responses.ChatInfo, len(chats))
-	for i, chat := range chats {
-		chatInfos[i] = chatInfoFromChat(chat)
+	chatInfos, err := s.listChatInfos(r.Context())
+	if err != nil {
+		return err
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -688,6 +683,11 @@ func (s *Server) getChat(w http.ResponseWriter, r *http.Request) error {
 
 	chat, err := s.Store.Chat(cid)
 	if err != nil {
+		chat = nil
+	}
+
+	chat, err = s.chatWithGitHubFallback(r.Context(), cid, chat)
+	if err != nil {
 		// Return empty chat if not found
 		data := responses.ChatResponse{
 			Chat: store.Chat{},
@@ -762,6 +762,7 @@ func (s *Server) renameChat(w http.ResponseWriter, r *http.Request) error {
 	if err := s.Store.SetChat(*chat); err != nil {
 		return fmt.Errorf("failed to update chat: %w", err)
 	}
+	s.syncChatToGitHubBestEffort(r.Context(), *chat)
 
 	// Return the updated chat info
 	w.Header().Set("Content-Type", "application/json")
@@ -789,6 +790,7 @@ func (s *Server) deleteChat(w http.ResponseWriter, r *http.Request) error {
 	if err := s.Store.DeleteChat(cid); err != nil {
 		return fmt.Errorf("failed to delete chat: %w", err)
 	}
+	s.deleteChatFromGitHubBestEffort(r.Context(), cid)
 
 	w.WriteHeader(http.StatusOK)
 	return nil
@@ -853,24 +855,6 @@ func (s *Server) settings(w http.ResponseWriter, r *http.Request) error {
 
 	if err := s.Store.SetSettings(settings); err != nil {
 		return fmt.Errorf("failed to save settings: %w", err)
-	}
-
-	// Handle auto-update toggle changes
-	if old.AutoUpdateEnabled != settings.AutoUpdateEnabled {
-		if !settings.AutoUpdateEnabled {
-			// Auto-update disabled: cancel any ongoing download
-			if s.Updater != nil {
-				s.Updater.CancelOngoingDownload()
-			}
-		} else {
-			// Auto-update re-enabled: show notification if update is already staged, or trigger immediate check
-			if (updater.IsUpdatePending() || updater.UpdateDownloaded) && s.UpdateAvailableFunc != nil {
-				s.UpdateAvailableFunc()
-			} else if s.Updater != nil {
-				// Trigger the background checker to run immediately
-				s.Updater.TriggerImmediateCheck()
-			}
-		}
 	}
 
 	if old.ContextLength != settings.ContextLength ||

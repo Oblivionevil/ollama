@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -37,12 +38,27 @@ type Webview struct {
 // Note: this must be called from the primary app thread
 // This returns the OS native window handle to the caller
 func (w *Webview) Run(path string) unsafe.Pointer {
-	var url string
+	var appURL string
 	if devMode {
 		// In development mode, use the local dev server
-		url = fmt.Sprintf("http://localhost:5173%s", path)
+		appURL = fmt.Sprintf("http://localhost:5173%s", path)
 	} else {
-		url = fmt.Sprintf("http://127.0.0.1:%d%s", w.port, path)
+		target := &url.URL{
+			Scheme: "http",
+			Host:   fmt.Sprintf("127.0.0.1:%d", w.port),
+		}
+
+		if parsedPath, err := url.Parse(path); err == nil {
+			target.Path = parsedPath.Path
+			target.RawQuery = parsedPath.RawQuery
+		} else {
+			target.Path = path
+		}
+
+		query := target.Query()
+		query.Set("token", w.token)
+		target.RawQuery = query.Encode()
+		appURL = target.String()
 	}
 	w.mutex.Lock()
 	defer w.mutex.Unlock()
@@ -56,10 +72,6 @@ func (w *Webview) Run(path string) unsafe.Pointer {
 		hideWindow(wv.Window())
 		wv.SetTitle("Ollama")
 
-		// TODO (jmorganca): this isn't working yet since it needs to be set
-		// on the first page load, ideally in an interstitial page like `/token`
-		// that exists only to set the cookie and redirect to /
-		// wv.Init(fmt.Sprintf(`document.cookie = "token=%s; path=/"`, w.token))
 		init := `
 		// Disable reload
 		document.addEventListener('keydown', function(e) {
@@ -82,8 +94,6 @@ func (w *Webview) Run(path string) unsafe.Pointer {
 			window.history.replaceState(null, '', window.location.pathname);
 		});
 
-		// Set token cookie
-		document.cookie = "token=` + w.token + `; path=/";
 	`
 		// Windows-specific scrollbar styling
 		if runtime.GOOS == "windows" {
@@ -464,7 +474,7 @@ func (w *Webview) Run(path string) unsafe.Pointer {
 		wv.SetSize(800, 600, webview.HintMin)
 
 		w.webview = wv
-		w.webview.Navigate(url)
+		w.webview.Navigate(appURL)
 	} else {
 		w.webview.Eval(fmt.Sprintf(`
 			history.pushState({}, '', '%s');

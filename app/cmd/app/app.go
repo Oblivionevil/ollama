@@ -27,14 +27,12 @@ import (
 	"github.com/ollama/ollama/app/store"
 	"github.com/ollama/ollama/app/tools"
 	"github.com/ollama/ollama/app/ui"
-	"github.com/ollama/ollama/app/updater"
 	"github.com/ollama/ollama/app/version"
 )
 
 var (
 	wv           = &Webview{}
 	uiServerPort int
-	appStore     *store.Store
 )
 
 var debug = strings.EqualFold(os.Getenv("OLLAMA_DEBUG"), "true") || os.Getenv("OLLAMA_DEBUG") == "1"
@@ -156,26 +154,7 @@ func main() {
 		}
 	}
 
-	if u := os.Getenv("OLLAMA_UPDATE_URL"); u != "" {
-		updater.UpdateCheckURLBase = u
-	}
-
-	// Detect if this is a first start after an upgrade, in
-	// which case we need to do some cleanup
-	var skipMove bool
-	if _, err := os.Stat(updater.UpgradeMarkerFile); err == nil {
-		slog.Debug("first start after upgrade")
-		err = updater.DoPostUpgradeCleanup()
-		if err != nil {
-			slog.Error("failed to cleanup prior version", "error", err)
-		}
-		// We never prompt to move the app after an upgrade
-		skipMove = true
-		// Start hidden after updates to prevent UI from opening automatically
-		startHidden = true
-	}
-
-	if !skipMove && !fastStartup {
+	if !fastStartup {
 		if maybeMoveAndRestart() == MoveCompleted {
 			return
 		}
@@ -208,7 +187,6 @@ func main() {
 	uiServerPort = port
 
 	st := &store.Store{}
-	appStore = st
 
 	// Enable CORS in development mode
 	if devMode {
@@ -245,8 +223,6 @@ func main() {
 	// making the webview a global variable is easier for now
 	wv.Store = st
 
-	upd := &updater.Updater{Store: st}
-
 	uiServer := ui.Server{
 		Token: token,
 		Restart:      func() {},
@@ -254,10 +230,6 @@ func main() {
 		ToolRegistry: toolRegistry,
 		Dev:          devMode,
 		Logger:       slog.Default(),
-		Updater:      upd,
-		UpdateAvailableFunc: func() {
-			UpdateAvailable("")
-		},
 	}
 
 	srv := &http.Server{
@@ -274,21 +246,6 @@ func main() {
 		}
 		slog.Debug("background desktop server done")
 	}()
-
-	upd.StartBackgroundUpdaterChecker(ctx, UpdateAvailable)
-
-	// Check for pending updates on startup (show tray notification if update is ready)
-	if updater.IsUpdatePending() {
-		// On Windows, the tray is initialized in osRun(). Calling UpdateAvailable
-		// before that would dereference a nil tray callback.
-		// TODO: refactor so the update check runs after platform init on all platforms.
-		if runtime.GOOS == "windows" {
-			slog.Debug("update pending on startup, deferring tray notification until tray initialization")
-		} else {
-			slog.Debug("update pending on startup, showing tray notification")
-			UpdateAvailable("")
-		}
-	}
 
 	hasCompletedFirstRun, err := st.HasCompletedFirstRun()
 	if err != nil {
@@ -336,37 +293,6 @@ func main() {
 }
 
 func startHiddenTasks() {
-	// If an upgrade is ready and we're in hidden mode, perform it at startup.
-	// If we're not in hidden mode, we want to start as fast as possible and not
-	// slow the user down with an upgrade.
-	if updater.IsUpdatePending() {
-		if fastStartup {
-			// CLI triggered app startup use-case
-			slog.Info("deferring pending update for fast startup")
-		} else {
-			// Check if auto-update is enabled before automatically upgrading
-			settings, err := appStore.Settings()
-			if err != nil {
-				slog.Warn("failed to load settings for upgrade check", "error", err)
-			} else if !settings.AutoUpdateEnabled {
-				slog.Info("auto-update disabled, skipping automatic upgrade at startup")
-				// Still show tray notification so user knows update is ready
-				UpdateAvailable("")
-				return
-			}
-
-			if err := updater.DoUpgradeAtStartup(); err != nil {
-				slog.Info("unable to perform upgrade at startup", "error", err)
-				// Make sure the restart to upgrade menu shows so we can attempt an interactive upgrade to get authorization
-				UpdateAvailable("")
-			} else {
-				slog.Debug("launching new version...")
-				// TODO - consider a timer that aborts if this takes too long and we haven't been killed yet...
-				LaunchNewApp()
-				os.Exit(0)
-			}
-		}
-	}
 }
 
 func checkUserLoggedIn(uiServerPort int) bool {
