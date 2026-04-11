@@ -1235,11 +1235,12 @@ func (db *database) setHasCompletedFirstRun(hasCompletedFirstRun bool) error {
 
 func (db *database) getSettings() (Settings, error) {
 	var s Settings
+	var legacyLastHomeView string
 
 	err := db.conn.QueryRow(`
 		SELECT expose, survey, browser, models, agent, tools, working_dir, context_length, turbo_enabled, websearch_enabled, selected_model, sidebar_open, last_home_view, think_enabled, think_level
 		FROM settings
-	`).Scan(&s.Expose, &s.Survey, &s.Browser, &s.Models, &s.Agent, &s.Tools, &s.WorkingDir, &s.ContextLength, &s.TurboEnabled, &s.WebSearchEnabled, &s.SelectedModel, &s.SidebarOpen, &s.LastHomeView, &s.ThinkEnabled, &s.ThinkLevel)
+	`).Scan(&s.Expose, &s.Survey, &s.Browser, &s.Models, &s.Agent, &s.Tools, &s.WorkingDir, &s.ContextLength, &s.TurboEnabled, &s.WebSearchEnabled, &s.SelectedModel, &s.SidebarOpen, &legacyLastHomeView, &s.ThinkEnabled, &s.ThinkLevel)
 	if err != nil {
 		return Settings{}, fmt.Errorf("get settings: %w", err)
 	}
@@ -1248,21 +1249,7 @@ func (db *database) getSettings() (Settings, error) {
 }
 
 func (db *database) setSettings(s Settings) error {
-	lastHomeView := strings.ToLower(strings.TrimSpace(s.LastHomeView))
-	validLaunchView := map[string]struct{}{
-		"launch":   {},
-		"openclaw": {},
-		"claude":   {},
-		"codex":    {},
-		"opencode": {},
-		"droid":    {},
-		"pi":       {},
-	}
-	if lastHomeView != "chat" {
-		if _, ok := validLaunchView[lastHomeView]; !ok {
-			lastHomeView = "chat"
-		}
-	}
+	const lastHomeView = "chat"
 
 	_, err := db.conn.Exec(`
 		UPDATE settings
