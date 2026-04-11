@@ -243,6 +243,13 @@ func (w *Webview) Run(path string) unsafe.Pointer {
 			wv.SetZoom(1.0)
 		})
 
+		wv.Bind("openExternal", func(url string) {
+			if strings.TrimSpace(url) == "" {
+				return
+			}
+			openInBrowser(url)
+		})
+
 		wv.Bind("ready", func() {
 			showWindow(wv.Window())
 		})

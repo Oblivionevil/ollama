@@ -15,6 +15,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { useUser } from "@/hooks/useUser";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { getSettings, updateSettings } from "@/api";
+import { openExternalUrl } from "@/lib/open-external";
 
 function AnimatedDots() {
   return (
@@ -145,7 +146,7 @@ export default function Settings() {
       if (!user || !user?.name) {
         const { data: connectUrl } = await fetchConnectUrl();
         if (connectUrl) {
-          window.open(connectUrl, "_blank");
+          await openExternalUrl(connectUrl);
           setIsAwaitingConnection(true);
           const interval = setInterval(() => {
             refreshUser();
@@ -243,7 +244,7 @@ export default function Settings() {
                             color="dark"
                             className="px-3 py-2 text-sm font-medium bg-black/90 backdrop-blur-sm text-white rounded-lg border border-white/10 shadow-2xl transition-all duration-300 ease-out relative overflow-hidden group"
                             onClick={() =>
-                              window.open("https://github.com/features/copilot", "_blank")
+                              void openExternalUrl("https://github.com/features/copilot")
                             }
                           >
                             <div className="absolute inset-0 bg-gradient-to-r from-cyan-500/20 via-purple-500/20 to-green-500/20 opacity-60 group-hover:opacity-80 transition-opacity duration-300"></div>
@@ -258,7 +259,7 @@ export default function Settings() {
                           color="white"
                           className="px-3 py-2 text-sm"
                           onClick={() =>
-                            window.open("https://github.com/settings/profile", "_blank")
+                            void openExternalUrl("https://github.com/settings/profile")
                           }
                         >
                           Manage
