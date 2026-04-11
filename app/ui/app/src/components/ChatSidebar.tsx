@@ -4,6 +4,7 @@ import { useDeleteChat } from "@/hooks/useDeleteChat";
 import { useQueryClient } from "@tanstack/react-query";
 import { getChat } from "@/api";
 import { Link } from "@/components/ui/link";
+import { useUser } from "@/hooks/useUser";
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { ChatsResponse } from "@/gotypes";
 import { CogIcon } from "@heroicons/react/24/outline";
@@ -19,6 +20,7 @@ interface ChatSidebarProps {
 
 export function ChatSidebar({ currentChatId }: ChatSidebarProps) {
   const { data, isLoading, error } = useChats();
+  const { isAuthenticated } = useUser();
   const queryClient = useQueryClient();
   const renameMutation = useRenameChat();
   const deleteMutation = useDeleteChat();
@@ -163,6 +165,8 @@ export function ChatSidebar({ currentChatId }: ChatSidebarProps) {
     ].filter((group) => group.chats.length > 0);
   }, [groupedChats]);
 
+  const showSignInHint = !isAuthenticated && chatGroups.length === 0;
+
   const handleDeleteChat = useCallback(
     async (chatId: string) => {
       const confirmed = window.confirm(
@@ -295,6 +299,20 @@ export function ChatSidebar({ currentChatId }: ChatSidebarProps) {
       </header>
       <div className="flex flex-1 flex-col px-4 py-1 overflow-y-auto overscroll-auto scrollbar-gutter">
         <div className="flex flex-col gap-3 pt-4">
+          {showSignInHint && (
+            <div className="rounded-2xl border border-neutral-200 bg-neutral-50 px-3 py-3 text-sm text-neutral-600 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-300">
+              <div className="flex flex-col gap-2">
+                <span>Sign in to load your cloud chats</span>
+                <Link
+                  href="/settings"
+                  className="inline-flex w-fit items-center rounded-full bg-neutral-100 px-3 py-1.5 text-sm font-medium text-neutral-700 hover:bg-neutral-200 dark:bg-neutral-700 dark:text-neutral-100 dark:hover:bg-neutral-600"
+                  draggable={false}
+                >
+                  Open Settings
+                </Link>
+              </div>
+            </div>
+          )}
           {chatGroups.map((group) => (
             <div key={group.name} className="flex flex-col gap-0.5">
               <h3 className="text-xs font-medium text-neutral-400 dark:text-neutral-500 px-2 py-1 select-none">

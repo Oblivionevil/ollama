@@ -8,6 +8,8 @@ import {
 } from "react";
 import { Model } from "@/gotypes";
 import { useSelectedModel } from "@/hooks/useSelectedModel";
+import { useUser } from "@/hooks/useUser";
+import { Link } from "@/components/ui/link";
 
 export const ModelPicker = forwardRef<
   HTMLButtonElement,
@@ -28,6 +30,7 @@ export const ModelPicker = forwardRef<
     chatId,
     searchQuery,
   );
+  const { isAuthenticated } = useUser();
   const dropdownRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const modelListRef = useRef<{
@@ -158,6 +161,7 @@ export const ModelPicker = forwardRef<
             selectedModel={selectedModel}
             onModelSelect={handleModelSelect}
             isOpen={isOpen}
+            isAuthenticated={isAuthenticated}
           />
         </div>
       )}
@@ -171,11 +175,13 @@ export const ModelList = forwardRef(function ModelList(
     selectedModel,
     onModelSelect,
     isOpen,
+    isAuthenticated,
   }: {
     models: Model[];
     selectedModel: Model | null;
     onModelSelect: (model: Model) => void;
     isOpen: boolean;
+    isAuthenticated: boolean;
   },
   ref,
 ): JSX.Element {
@@ -252,8 +258,20 @@ export const ModelList = forwardRef(function ModelList(
       className="h-64 overflow-y-auto overflow-x-hidden"
     >
       {models.length === 0 ? (
-        <div className="px-3 py-2 text-neutral-500 dark:text-neutral-400">
-          No models found
+        <div className="px-3 py-3 text-neutral-500 dark:text-neutral-400">
+          {!isAuthenticated ? (
+            <div className="flex flex-col gap-2">
+              <span>Sign in to load cloud models</span>
+              <Link
+                href="/settings"
+                className="inline-flex w-fit items-center rounded-full bg-neutral-100 px-3 py-1.5 text-sm font-medium text-neutral-700 hover:bg-neutral-200 dark:bg-neutral-700 dark:text-neutral-100 dark:hover:bg-neutral-600"
+              >
+                Open Settings
+              </Link>
+            </div>
+          ) : (
+            <span>No models found</span>
+          )}
         </div>
       ) : (
         models.map((model, index) => {
