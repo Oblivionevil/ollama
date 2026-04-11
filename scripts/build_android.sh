@@ -73,6 +73,28 @@ go install "golang.org/x/mobile/cmd/gomobile@$GOMOBILE_VERSION"
 go install "golang.org/x/mobile/cmd/gobind@$GOMOBILE_VERSION"
 export PATH="$(go env GOPATH)/bin:$PATH"
 
+if [ -n "${ANDROID_NDK_HOME:-}" ]; then
+    host_tag="linux-x86_64"
+    case "$(uname -s)" in
+        Darwin)
+            if [ "$(uname -m)" = "arm64" ]; then
+                host_tag="darwin-arm64"
+            else
+                host_tag="darwin-x86_64"
+            fi
+            ;;
+        Linux)
+            host_tag="linux-x86_64"
+            ;;
+    esac
+
+    ndk_bin="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/$host_tag/bin"
+    export CC="${CC:-$ndk_bin/x86_64-linux-android26-clang}"
+    export CXX="${CXX:-$ndk_bin/x86_64-linux-android26-clang++}"
+fi
+
+export CGO_ENABLED=1
+
 mkdir -p "$(dirname "$AAR_OUTPUT")"
 
 # Target arm64 and amd64 (for emulators)
