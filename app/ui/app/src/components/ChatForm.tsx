@@ -29,7 +29,7 @@ import { useSettings } from "@/hooks/useSettings";
 import { ThinkButton } from "./ThinkButton";
 import { ErrorMessage } from "./ErrorMessage";
 import { processFiles } from "@/utils/fileValidation";
-import type { ImageData } from "@/types/webview";
+import type { SelectedFileData } from "@/types/webview";
 import { PlusIcon } from "@heroicons/react/24/outline";
 
 export type ThinkingLevel = string;
@@ -686,7 +686,7 @@ function ChatForm({
       if (results && results.length > 0) {
         // Convert native dialog results to File objects
         const files = results
-          .map((result: ImageData) => {
+          .map((result: SelectedFileData) => {
             if (result.dataURL) {
               // Convert dataURL back to File object
               const base64Data = result.dataURL.split(",")[1];

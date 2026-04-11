@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { IMAGE_EXTENSIONS, validateFile } from "./fileValidation";
+import {
+  IMAGE_EXTENSIONS,
+  TEXT_FILE_EXTENSIONS,
+  validateFile,
+} from "./fileValidation";
 
 describe("fileValidation", () => {
   describe("IMAGE_EXTENSIONS", () => {
@@ -8,6 +12,23 @@ describe("fileValidation", () => {
       expect(IMAGE_EXTENSIONS).toContain("jpg");
       expect(IMAGE_EXTENSIONS).toContain("jpeg");
       expect(IMAGE_EXTENSIONS).toContain("webp");
+    });
+  });
+
+  describe("TEXT_FILE_EXTENSIONS", () => {
+    it("should include common office and document formats", () => {
+      expect(TEXT_FILE_EXTENSIONS).toContain("docx");
+      expect(TEXT_FILE_EXTENSIONS).toContain("docm");
+      expect(TEXT_FILE_EXTENSIONS).toContain("xlsx");
+      expect(TEXT_FILE_EXTENSIONS).toContain("xlsm");
+      expect(TEXT_FILE_EXTENSIONS).toContain("pptx");
+      expect(TEXT_FILE_EXTENSIONS).toContain("pptm");
+      expect(TEXT_FILE_EXTENSIONS).toContain("odt");
+      expect(TEXT_FILE_EXTENSIONS).toContain("ods");
+      expect(TEXT_FILE_EXTENSIONS).toContain("odp");
+      expect(TEXT_FILE_EXTENSIONS).toContain("rtf");
+      expect(TEXT_FILE_EXTENSIONS).toContain("tsv");
+      expect(TEXT_FILE_EXTENSIONS).toContain("xhtml");
     });
   });
 

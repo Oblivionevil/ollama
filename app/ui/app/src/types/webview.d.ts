@@ -1,6 +1,6 @@
 // Type declarations for webview API functions
 
-interface ImageData {
+interface SelectedFileData {
   filename: string;
   path: string;
   dataURL: string; // base64 encoded file data
@@ -13,8 +13,8 @@ interface MenuItem {
 }
 
 interface WebviewAPI {
-  selectFile: () => Promise<ImageData | null>;
-  selectMultipleFiles: () => Promise<ImageData[] | null>;
+  selectFile: () => Promise<SelectedFileData | null>;
+  selectMultipleFiles: () => Promise<SelectedFileData[] | null>;
   selectModelsDirectory: () => Promise<string | null>;
   selectWorkingDirectory: () => Promise<string | null>;
 }
@@ -47,4 +47,4 @@ declare global {
   }
 }
 
-export type { ImageData, WebviewAPI, ContextMenuItem, ContextMenuResult };
+export type { SelectedFileData, WebviewAPI, ContextMenuItem, ContextMenuResult };

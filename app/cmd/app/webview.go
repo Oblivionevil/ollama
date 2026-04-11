@@ -294,7 +294,8 @@ func (w *Webview) Run(path string) unsafe.Pointer {
 
 				// Define allowed extensions for native dialog filtering
 				textExts := []string{
-					"pdf", "docx", "txt", "md", "csv", "json", "xml", "html", "htm",
+					"pdf", "docx", "docm", "txt", "md", "csv", "tsv", "json", "xml", "html", "htm", "xhtml",
+					"xlsx", "xlsm", "pptx", "pptm", "odt", "ods", "odp",
 					"js", "jsx", "ts", "tsx", "py", "java", "cpp", "c", "cc", "h", "cs", "php", "rb",
 					"go", "rs", "swift", "kt", "scala", "sh", "bat", "yaml", "yml", "toml", "ini",
 					"cfg", "conf", "log", "rtf",
