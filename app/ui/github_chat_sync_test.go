@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/app/store"
 	"github.com/ollama/ollama/app/types/not"
 	"github.com/ollama/ollama/app/ui/responses"
@@ -64,8 +65,8 @@ func TestSyncChatToGitHubWritesChatAndManifest(t *testing.T) {
 	if manifest.Chats[0].ID != chat.ID {
 		t.Fatalf("manifest chat id = %q, want %q", manifest.Chats[0].ID, chat.ID)
 	}
-	if fakeAPI.lastAuthorization != "Bearer gh-test-token" {
-		t.Fatalf("authorization = %q, want Bearer gh-test-token", fakeAPI.lastAuthorization)
+	if fakeAPI.lastAuthorization != "token gh-test-token" {
+		t.Fatalf("authorization = %q, want token gh-test-token", fakeAPI.lastAuthorization)
 	}
 }
 
@@ -225,11 +226,89 @@ func TestListChatsMigratesLocalChatsToGitHubAndRemovesLocalCopy(t *testing.T) {
 	}
 }
 
+func TestGitHubChatAuthorizedSessionClearsSessionWithoutRepoAccess(t *testing.T) {
+	fakeAPI := newFakeGitHubContentsAPI(t)
+	fakeAPI.repoStatus = http.StatusNotFound
+
+	testStore := &store.Store{DBPath: filepath.Join(t.TempDir(), "db.sqlite")}
+	defer testStore.Close()
+
+	if err := testStore.SetAuthSession(store.AuthSession{AccessToken: "gh-test-token"}); err != nil {
+		t.Fatalf("SetAuthSession() error = %v", err)
+	}
+
+	server := &Server{
+		Store:            testStore,
+		githubAPIBaseURL: fakeAPI.server.URL,
+		githubChatRepo:   defaultGitHubChatRepo,
+	}
+
+	_, err := server.githubChatAuthorizedSession(context.Background())
+	if err == nil {
+		t.Fatal("githubChatAuthorizedSession() error = nil, want authorization error")
+	}
+
+	var authErr api.AuthorizationError
+	if !errors.As(err, &authErr) {
+		t.Fatalf("githubChatAuthorizedSession() error = %T, want authorization error", err)
+	}
+
+	session, err := testStore.AuthSession()
+	if err != nil {
+		t.Fatalf("AuthSession() error = %v", err)
+	}
+	if session != nil {
+		t.Fatal("auth session was not cleared after repo access failure")
+	}
+}
+
+func TestListChatsReturnsEmptyWhenGitHubValidationFails(t *testing.T) {
+	fakeAPI := newFakeGitHubContentsAPI(t)
+	fakeAPI.repoStatus = http.StatusInternalServerError
+
+	testStore := &store.Store{DBPath: filepath.Join(t.TempDir(), "db.sqlite")}
+	defer testStore.Close()
+
+	if err := testStore.SetAuthSession(store.AuthSession{AccessToken: "gh-test-token"}); err != nil {
+		t.Fatalf("SetAuthSession() error = %v", err)
+	}
+
+	server := &Server{
+		Store:            testStore,
+		githubAPIBaseURL: fakeAPI.server.URL,
+		githubChatRepo:   defaultGitHubChatRepo,
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/chats", nil)
+	rr := httptest.NewRecorder()
+
+	if err := server.listChats(rr, req); err != nil {
+		t.Fatalf("listChats() error = %v", err)
+	}
+
+	var response responses.ChatsResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(response.ChatInfos) != 0 {
+		t.Fatalf("chat count = %d, want 0", len(response.ChatInfos))
+	}
+
+	session, err := testStore.AuthSession()
+	if err != nil {
+		t.Fatalf("AuthSession() error = %v", err)
+	}
+	if session == nil {
+		t.Fatal("auth session should be preserved for transient GitHub failures")
+	}
+}
+
 type fakeGitHubContentsAPI struct {
 	server            *httptest.Server
 	mu                sync.Mutex
 	files             map[string]fakeGitHubFile
 	lastAuthorization string
+	repoStatus        int
 }
 
 type fakeGitHubFile struct {
@@ -250,6 +329,20 @@ func newFakeGitHubContentsAPI(t *testing.T) *fakeGitHubContentsAPI {
 
 func (f *fakeGitHubContentsAPI) handle(t *testing.T, w http.ResponseWriter, r *http.Request) {
 	t.Helper()
+
+	if r.URL.Path == "/repos/Oblivionevil/Chatrepo" {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		f.lastAuthorization = r.Header.Get("Authorization")
+		if f.repoStatus != 0 && f.repoStatus != http.StatusOK {
+			w.WriteHeader(f.repoStatus)
+			json.NewEncoder(w).Encode(map[string]string{"message": http.StatusText(f.repoStatus)})
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"full_name": defaultGitHubChatRepo})
+		return
+	}
 
 	prefix := "/repos/Oblivionevil/Chatrepo/contents/"
 	if !strings.HasPrefix(r.URL.Path, prefix) {

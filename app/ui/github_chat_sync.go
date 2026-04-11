@@ -53,12 +53,13 @@ type githubChatManifest struct {
 }
 
 func (s *Server) listChatInfos(ctx context.Context) ([]responses.ChatInfo, error) {
-	session, err := s.githubChatAuthorizedSession()
+	session, err := s.githubChatAuthorizedSession(ctx)
 	if err != nil {
 		if isAuthorizationError(err) {
 			return []responses.ChatInfo{}, nil
 		}
-		return nil, err
+		s.log().Warn("failed to validate GitHub chat session", "error", err)
+		return []responses.ChatInfo{}, nil
 	}
 
 	if err := s.migrateLocalChatsToGitHub(ctx, session); err != nil {
@@ -67,7 +68,8 @@ func (s *Server) listChatInfos(ctx context.Context) ([]responses.ChatInfo, error
 
 	manifest, err := s.loadGitHubChatManifest(ctx, session)
 	if err != nil {
-		return nil, err
+		s.log().Warn("failed to load GitHub chat manifest", "error", err)
+		return []responses.ChatInfo{}, nil
 	}
 	sortManifest(manifest)
 
@@ -177,7 +179,7 @@ func (s *Server) syncChatToGitHubBestEffort(_ context.Context, chat store.Chat) 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	session, err := s.githubChatAuthorizedSession()
+	session, err := s.githubChatAuthorizedSession(ctx)
 	if err != nil {
 		if !isAuthorizationError(err) {
 			s.log().Warn("failed to load GitHub chat session", "chat_id", chat.ID, "error", err)
@@ -194,7 +196,7 @@ func (s *Server) deleteChatFromGitHubBestEffort(_ context.Context, chatID string
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	session, err := s.githubChatAuthorizedSession()
+	session, err := s.githubChatAuthorizedSession(ctx)
 	if err != nil {
 		if !isAuthorizationError(err) {
 			s.log().Warn("failed to load GitHub chat session", "chat_id", chatID, "error", err)
@@ -314,7 +316,7 @@ func (s *Server) loadGitHubChat(ctx context.Context, session *store.AuthSession,
 	return &chat, true, nil
 }
 
-func (s *Server) githubChatAuthorizedSession() (*store.AuthSession, error) {
+func (s *Server) githubChatAuthorizedSession(ctx context.Context) (*store.AuthSession, error) {
 	if s.Store == nil {
 		return nil, api.AuthorizationError{StatusCode: http.StatusUnauthorized, Status: http.StatusText(http.StatusUnauthorized)}
 	}
@@ -325,6 +327,9 @@ func (s *Server) githubChatAuthorizedSession() (*store.AuthSession, error) {
 	}
 	if session == nil || session.AccessToken == "" {
 		return nil, api.AuthorizationError{StatusCode: http.StatusUnauthorized, Status: http.StatusText(http.StatusUnauthorized)}
+	}
+	if err := s.ensureGitHubChatRepoAccess(ctx, session); err != nil {
+		return nil, err
 	}
 
 	return session, nil
@@ -361,9 +366,33 @@ func (s *Server) githubAPIBase() string {
 	return "https://api.github.com"
 }
 
+func (s *Server) ensureGitHubChatRepoAccess(ctx context.Context, session *store.AuthSession) error {
+	endpoint, err := s.githubRepoEndpoint()
+	if err != nil {
+		return err
+	}
+
+	resp, data, err := s.doJSONRequest(ctx, http.MethodGet, endpoint, s.githubChatHeaders(session), nil)
+	if err != nil {
+		return fmt.Errorf("validate GitHub chat repository access: %w", err)
+	}
+	if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
+		return nil
+	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden || resp.StatusCode == http.StatusNotFound {
+		s.copilotClearAuthSession()
+		return api.AuthorizationError{
+			StatusCode: http.StatusUnauthorized,
+			Status:     "GitHub chat sync requires signing in again to grant repository access",
+		}
+	}
+
+	return fmt.Errorf("validate GitHub chat repository access failed: %s", strings.TrimSpace(string(data)))
+}
+
 func (s *Server) githubChatHeaders(session *store.AuthSession) map[string]string {
 	return map[string]string{
-		"Authorization":        "Bearer " + session.AccessToken,
+		"Authorization":        "token " + session.AccessToken,
 		"Accept":               "application/vnd.github+json",
 		"X-GitHub-Api-Version": githubAPIVersion,
 		"User-Agent":           userAgent(),
@@ -471,6 +500,15 @@ func (s *Server) githubContentsEndpoint(filePath string) (string, error) {
 
 	filePath = strings.TrimPrefix(filePath, "/")
 	return fmt.Sprintf("%s/repos/%s/%s/contents/%s", s.githubAPIBase(), owner, repo, filePath), nil
+}
+
+func (s *Server) githubRepoEndpoint() (string, error) {
+	owner, repo, err := s.githubChatRepoParts()
+	if err != nil {
+		return "", err
+	}
+
+	return fmt.Sprintf("%s/repos/%s/%s", s.githubAPIBase(), owner, repo), nil
 }
 
 func (s *Server) githubChatFilePath(chatID string) string {

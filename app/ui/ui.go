@@ -688,7 +688,7 @@ func (s *Server) getChat(w http.ResponseWriter, r *http.Request) error {
 		return fmt.Errorf("chat ID is required")
 	}
 
-	session, err := s.githubChatAuthorizedSession()
+	session, err := s.githubChatAuthorizedSession(r.Context())
 	if err != nil {
 		if isAuthorizationError(err) {
 			data := responses.ChatResponse{Chat: store.Chat{}}
@@ -766,7 +766,7 @@ func (s *Server) renameChat(w http.ResponseWriter, r *http.Request) error {
 		return fmt.Errorf("invalid request body: %w", err)
 	}
 
-	session, err := s.githubChatAuthorizedSession()
+	session, err := s.githubChatAuthorizedSession(r.Context())
 	if err != nil {
 		return err
 	}
@@ -794,7 +794,7 @@ func (s *Server) deleteChat(w http.ResponseWriter, r *http.Request) error {
 		return fmt.Errorf("chat ID is required")
 	}
 
-	session, err := s.githubChatAuthorizedSession()
+	session, err := s.githubChatAuthorizedSession(r.Context())
 	if err != nil {
 		return err
 	}
