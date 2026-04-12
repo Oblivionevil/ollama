@@ -111,6 +111,20 @@ EOF
     cp "$work_dir/src/gobind/libgojni.so" "$out_dir/libgojni.so"
 }
 
+find_release_apk() {
+    local release_dir="$ANDROID_DIR/app/build/outputs/apk/release"
+
+    for candidate in app-release.apk app-release-unsigned.apk; do
+        if [ -f "$release_dir/$candidate" ]; then
+            printf '%s\n' "app/build/outputs/apk/release/$candidate"
+            return 0
+        fi
+    done
+
+    echo "Release APK not found under $release_dir" >&2
+    return 1
+}
+
 rm -rf "$JNI_LIB_DIR" "$ANDROID_DIR/.build"
 build_gojni arm64 arm64-v8a aarch64-linux-android
 build_gojni amd64 x86_64 x86_64-linux-android
@@ -133,7 +147,7 @@ if [ "$BUILD_TYPE" = "release" ]; then
     "$GRADLE_BIN" -p "$ANDROID_DIR" assembleRelease \
         -PappVersionName="$APP_VERSION_NAME" \
         -PappVersionCode="$APP_VERSION_CODE"
-    APK_PATH="app/build/outputs/apk/release/app-release-unsigned.apk"
+    APK_PATH="$(find_release_apk)"
 else
     "$GRADLE_BIN" -p "$ANDROID_DIR" assembleDebug \
         -PappVersionName="$APP_VERSION_NAME" \

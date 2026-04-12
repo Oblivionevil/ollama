@@ -5,10 +5,45 @@ plugins {
 
 val appVersionName = providers.gradleProperty("appVersionName").orElse("0.0.0").get()
 val appVersionCode = providers.gradleProperty("appVersionCode").orElse("1").map(String::toInt).get()
+val androidKeystorePath = providers.gradleProperty("androidKeystorePath")
+    .orElse(providers.environmentVariable("ANDROID_KEYSTORE_PATH"))
+    .orNull
+val androidKeystoreType = providers.gradleProperty("androidKeystoreType")
+    .orElse(providers.environmentVariable("ANDROID_KEYSTORE_TYPE"))
+    .orNull
+val androidKeystorePassword = providers.gradleProperty("androidKeystorePassword")
+    .orElse(providers.environmentVariable("ANDROID_KEYSTORE_PASSWORD"))
+    .orNull
+val androidKeyAlias = providers.gradleProperty("androidKeyAlias")
+    .orElse(providers.environmentVariable("ANDROID_KEY_ALIAS"))
+    .orNull
+val androidKeyPassword = providers.gradleProperty("androidKeyPassword")
+    .orElse(providers.environmentVariable("ANDROID_KEY_PASSWORD"))
+    .orNull
+val hasReleaseSigning = listOf(
+    androidKeystorePath,
+    androidKeystorePassword,
+    androidKeyAlias,
+    androidKeyPassword,
+).all { !it.isNullOrBlank() }
 
 android {
     namespace = "com.ollama.app"
     compileSdk = 35
+
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = file(androidKeystorePath!!)
+                storeType = androidKeystoreType ?: "PKCS12"
+                storePassword = androidKeystorePassword
+                keyAlias = androidKeyAlias
+                keyPassword = androidKeyPassword
+                enableV1Signing = true
+                enableV2Signing = true
+            }
+        }
+    }
 
     defaultConfig {
         applicationId = "com.ollama.app"
@@ -22,6 +57,9 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

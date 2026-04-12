@@ -105,17 +105,83 @@ jobs:
           sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018"
           echo "ANDROID_NDK_HOME=${sdk_root}/ndk/27.2.12479018" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_ROOT=${sdk_root}/ndk/27.2.12479018" >> "$GITHUB_ENV"
+      - name: Configure Android signing inputs
+        shell: bash
+        env:
+          ANDROID_RELEASE_KEYSTORE_BASE64: ${{ secrets.ANDROID_RELEASE_KEYSTORE_BASE64 }}
+          ANDROID_RELEASE_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEYSTORE_PASSWORD }}
+          ANDROID_RELEASE_KEY_ALIAS: ${{ secrets.ANDROID_RELEASE_KEY_ALIAS }}
+          ANDROID_RELEASE_KEY_PASSWORD: ${{ secrets.ANDROID_RELEASE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          provided=0
+          for value in \
+            "${ANDROID_RELEASE_KEYSTORE_BASE64:-}" \
+            "${ANDROID_RELEASE_KEYSTORE_PASSWORD:-}" \
+            "${ANDROID_RELEASE_KEY_ALIAS:-}" \
+            "${ANDROID_RELEASE_KEY_PASSWORD:-}"; do
+            if [ -n "$value" ]; then
+              provided=$((provided + 1))
+            fi
+          done
+
+          if [ "$provided" -ne 0 ] && [ "$provided" -ne 4 ]; then
+            echo "Configure all Android release signing secrets or none of them." >&2
+            exit 1
+          fi
+
+          keystore_path="$RUNNER_TEMP/ollama-android-release.keystore"
+          keystore_type="PKCS12"
+
+          if [ "$provided" -eq 4 ]; then
+            printf '%s' "$ANDROID_RELEASE_KEYSTORE_BASE64" | base64 --decode > "$keystore_path"
+            store_password="$ANDROID_RELEASE_KEYSTORE_PASSWORD"
+            key_alias="$ANDROID_RELEASE_KEY_ALIAS"
+            key_password="$ANDROID_RELEASE_KEY_PASSWORD"
+            echo "Using configured Android release keystore"
+          else
+            store_password="ollama-release"
+            key_alias="ollama-release"
+            key_password="$store_password"
+
+            keytool -genkeypair -v \
+              -keystore "$keystore_path" \
+              -storetype "$keystore_type" \
+              -storepass "$store_password" \
+              -alias "$key_alias" \
+              -keypass "$key_password" \
+              -keyalg RSA \
+              -keysize 4096 \
+              -validity 3650 \
+              -dname "CN=Ollama Android Release, OU=CI, O=Ollama, L=NA, ST=NA, C=US"
+
+            echo "Generated temporary Android release keystore"
+          fi
+
+          {
+            echo "ANDROID_KEYSTORE_PATH=$keystore_path"
+            echo "ANDROID_KEYSTORE_TYPE=$keystore_type"
+            echo "ANDROID_KEYSTORE_PASSWORD=$store_password"
+            echo "ANDROID_KEY_ALIAS=$key_alias"
+            echo "ANDROID_KEY_PASSWORD=$key_password"
+          } >> "$GITHUB_ENV"
       - name: Build Android APK
         shell: bash
         run: |
           chmod +x ./scripts/build_android.sh
-          ./scripts/build_android.sh debug
+          ./scripts/build_android.sh release
           mkdir -p dist
-          cp android/app/build/outputs/apk/debug/app-debug.apk dist/Ollama-android-debug.apk
+          release_apk="android/app/build/outputs/apk/release/app-release.apk"
+          if [ ! -f "$release_apk" ]; then
+            release_apk="android/app/build/outputs/apk/release/app-release-unsigned.apk"
+          fi
+          [ -f "$release_apk" ]
+          cp "$release_apk" dist/Ollama-android-release.apk
       - uses: actions/upload-artifact@v7
         with:
           name: bundles-android
-          path: dist/Ollama-android-debug.apk
+          path: dist/Ollama-android-release.apk
 
   windows-package:
     needs: [setup, windows-build]
