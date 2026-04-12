@@ -52,10 +52,13 @@ jobs:
           node-version: '20'
       - name: Install compiler toolchain
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
-          Invoke-WebRequest -Uri "https://github.com/mstorsjo/llvm-mingw/releases/download/20240619/llvm-mingw-20240619-ucrt-${{ matrix.llvmarch }}.zip" -OutFile "${{ runner.temp }}\llvm-mingw-ucrt.zip"
-          Expand-Archive -Path "${{ runner.temp }}\llvm-mingw-ucrt.zip" -DestinationPath 'C:\Program Files\'
+          $archivePath = "${{ runner.temp }}\llvm-mingw-20240619-ucrt-${{ matrix.llvmarch }}.zip"
+          gh release download 20240619 --repo mstorsjo/llvm-mingw --pattern "llvm-mingw-20240619-ucrt-${{ matrix.llvmarch }}.zip" --dir "${{ runner.temp }}" --clobber
+          Expand-Archive -Path $archivePath -DestinationPath 'C:\Program Files\'
           $installPath = (Resolve-Path -Path 'C:\Program Files\llvm-mingw-*-ucrt*').Path
           echo "$installPath\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       - name: Build desktop app
