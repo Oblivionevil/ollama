@@ -208,6 +208,34 @@ function ChatForm({
     }));
   };
 
+  const insertTextAtCursor = useCallback((text: string) => {
+    const textarea = textareaRef.current;
+    if (!textarea) {
+      setMessage((prev) => ({
+        ...prev,
+        content: prev.content + text,
+      }));
+      return;
+    }
+
+    const isFocused = document.activeElement === textarea;
+    const start = isFocused ? textarea.selectionStart : textarea.value.length;
+    const end = isFocused ? textarea.selectionEnd : textarea.value.length;
+
+    setMessage((prev) => ({
+      ...prev,
+      content: prev.content.slice(0, start) + text + prev.content.slice(end),
+    }));
+
+    requestAnimationFrame(() => {
+      textarea.focus();
+      const nextPosition = start + text.length;
+      textarea.setSelectionRange(nextPosition, nextPosition);
+      textarea.style.height = "auto";
+      textarea.style.height = Math.min(textarea.scrollHeight, 24 * 8) + "px";
+    });
+  }, []);
+
   // Create stable callback for file handling
   const handleFilesReceived = useCallback(
     (
@@ -263,6 +291,58 @@ function ChatForm({
     },
     [selectedModel, hasVisionCapability, handleFilesReceived],
   );
+
+  const pasteClipboardShortcut = useCallback(async (): Promise<boolean> => {
+    if (typeof navigator === "undefined" || !navigator.clipboard) {
+      return false;
+    }
+
+    try {
+      if (typeof navigator.clipboard.read === "function") {
+        const clipboardItems = await navigator.clipboard.read();
+        const files: File[] = [];
+        let text = "";
+
+        for (const item of clipboardItems) {
+          for (const type of item.types) {
+            const blob = await item.getType(type);
+
+            if (type.startsWith("image/")) {
+              files.push(new File([blob], "", { type: blob.type || type }));
+              continue;
+            }
+
+            if (type === "text/plain" && text === "") {
+              text = await blob.text();
+            }
+          }
+        }
+
+        if (files.length > 0) {
+          await processSelectedFiles(files);
+          textareaRef.current?.focus();
+          return true;
+        }
+
+        if (text !== "") {
+          insertTextAtCursor(text);
+          return true;
+        }
+      }
+
+      if (typeof navigator.clipboard.readText === "function") {
+        const text = await navigator.clipboard.readText();
+        if (text !== "") {
+          insertTextAtCursor(text);
+          return true;
+        }
+      }
+    } catch (error) {
+      console.error("Clipboard paste shortcut failed:", error);
+    }
+
+    return false;
+  }, [insertTextAtCursor, processSelectedFiles]);
 
   // Determine if login banner should be shown
   const shouldShowLoginBanner =
@@ -429,6 +509,21 @@ function ChatForm({
 
   // Global keyboard and paste event handlers
   useEffect(() => {
+    const isEditableElement = (target: HTMLElement | null) => {
+      if (!target) {
+        return false;
+      }
+
+      return Boolean(
+        target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.contentEditable === "true" ||
+          target.closest("input") ||
+          target.closest("textarea") ||
+          target.closest("[contenteditable='true']"),
+      );
+    };
+
     const focusTextareaIfAppropriate = (target: HTMLElement) => {
       if (
         !textareaRef.current ||
@@ -437,13 +532,7 @@ function ChatForm({
         return;
       }
 
-      const isEditableTarget =
-        target.tagName === "INPUT" ||
-        target.tagName === "TEXTAREA" ||
-        target.contentEditable === "true" ||
-        target.closest("input") ||
-        target.closest("textarea") ||
-        target.closest("[contenteditable='true']");
+      const isEditableTarget = isEditableElement(target);
 
       if (!isEditableTarget) {
         textareaRef.current.focus();
@@ -486,18 +575,22 @@ function ChatForm({
       }
 
       // Handle paste shortcuts
-      const isPasteShortcut = (e.ctrlKey || e.metaKey) && e.key === "v";
+      const isPasteShortcut = (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "v";
       if (isPasteShortcut) {
-        focusTextareaIfAppropriate(e.target as HTMLElement);
+        const target = e.target as HTMLElement;
+        if (!isEditableElement(target)) {
+          e.preventDefault();
+          void pasteClipboardShortcut();
+          return;
+        }
+
+        focusTextareaIfAppropriate(target);
         return;
       }
 
       // Handle auto-focus when typing printable characters
       const target = e.target as HTMLElement;
-      const isInInputField =
-        target.tagName === "INPUT" ||
-        target.tagName === "TEXTAREA" ||
-        target.contentEditable === "true";
+      const isInInputField = isEditableElement(target);
 
       if (
         !isInInputField &&
@@ -516,13 +609,19 @@ function ChatForm({
     };
 
     window.addEventListener("keydown", handleKeyDown);
-    document.addEventListener("paste", handlePaste);
+    document.addEventListener("paste", handlePaste, true);
 
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
-      document.removeEventListener("paste", handlePaste);
+      document.removeEventListener("paste", handlePaste, true);
     };
-  }, [isStreaming, editingMessage, onCancelEdit, navigateToNextElement]);
+  }, [
+    isStreaming,
+    editingMessage,
+    onCancelEdit,
+    navigateToNextElement,
+    pasteClipboardShortcut,
+  ]);
 
   const handleSubmit = async () => {
     if (

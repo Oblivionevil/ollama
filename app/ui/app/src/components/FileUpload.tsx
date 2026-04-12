@@ -165,16 +165,6 @@ export function FileUpload({
         return;
       }
 
-      // Check if there's text data in the clipboard
-      // Only process files if there's no text data
-      const hasTextData =
-        e.clipboardData!.types.includes("text/plain") &&
-        e.clipboardData!.getData("text/plain").trim().length > 0;
-
-      if (hasTextData) {
-        return;
-      }
-
       e.preventDefault();
       await processFiles(e.clipboardData!);
     },
@@ -213,9 +203,9 @@ export function FileUpload({
 
   // Set up paste event listener
   useEffect(() => {
-    document.addEventListener("paste", handlePaste);
+    document.addEventListener("paste", handlePaste, true);
     return () => {
-      document.removeEventListener("paste", handlePaste);
+      document.removeEventListener("paste", handlePaste, true);
     };
   }, [handlePaste]);
 
