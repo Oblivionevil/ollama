@@ -460,8 +460,51 @@ export const useSendMessage = (chatId: string) => {
             break;
           }
           case "thinking": {
-            // Intentionally ignore live thinking updates in the chat UI.
-            // The final saved chat still includes thinking content after refetch.
+            // Accumulate thinking content in real-time so the Thinking
+            // component can display it while the model is still reasoning.
+            batcher.scheduleBatch((old: { chat: Chat } | undefined) => {
+              if (!old) return old;
+
+              const existingMessages = old.chat.messages || [];
+              const newMessages = [...existingMessages];
+
+              let lastMessage = newMessages[newMessages.length - 1];
+              if (!lastMessage || lastMessage.role !== "assistant") {
+                newMessages.push(
+                  new Message({
+                    role: "assistant",
+                    content: "",
+                    thinking: "",
+                    model: effectiveModel,
+                  }),
+                );
+                lastMessage = newMessages[newMessages.length - 1];
+              }
+
+              if (lastMessage) {
+                const updatedThinking =
+                  (lastMessage.thinking || "") + (event.thinking || "");
+                const updatedMessage = new Message({
+                  ...lastMessage,
+                  thinking: updatedThinking,
+                });
+                if (event.thinkingTimeStart) {
+                  updatedMessage.thinkingTimeStart = event.thinkingTimeStart;
+                }
+                if (event.thinkingTimeEnd) {
+                  updatedMessage.thinkingTimeEnd = event.thinkingTimeEnd;
+                }
+                newMessages[newMessages.length - 1] = updatedMessage;
+              }
+
+              return {
+                ...old,
+                chat: new Chat({
+                  ...old.chat,
+                  messages: newMessages,
+                }),
+              };
+            });
             break;
           }
           case "tool_call": {
