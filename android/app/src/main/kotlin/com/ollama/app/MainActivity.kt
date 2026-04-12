@@ -22,6 +22,8 @@ import ollama.Ollama
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.InputStream
+import java.net.HttpURLConnection
+import java.net.URL
 
 class MainActivity : AppCompatActivity() {
 
@@ -137,12 +139,49 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun loadApp() {
-        if (serverPort == 0) {
+    private fun appUrl(path: String = "/"): String {
+        val normalizedPath = if (path.startsWith("/")) path else "/$path"
+        return "http://127.0.0.1:$serverPort$normalizedPath?token=$serverToken"
+    }
+
+    private fun waitForServerReady(): Boolean {
+        repeat(20) {
+            try {
+                val connection = (URL("http://127.0.0.1:$serverPort/api/version").openConnection() as HttpURLConnection).apply {
+                    requestMethod = "HEAD"
+                    instanceFollowRedirects = false
+                    connectTimeout = 250
+                    readTimeout = 250
+                }
+
+                if (connection.responseCode > 0) {
+                    return true
+                }
+            } catch (_: Exception) {
+            }
+
+            Thread.sleep(150)
+        }
+
+        return false
+    }
+
+    private fun loadApp(path: String = "/") {
+        if (serverPort == 0 || serverToken.isBlank()) {
             Log.e(TAG, "Server not started, cannot load app")
             return
         }
-        webView.loadUrl("http://127.0.0.1:$serverPort/?token=$serverToken")
+
+        Thread {
+            if (!waitForServerReady()) {
+                Log.e(TAG, "Local server did not become ready in time")
+                return@Thread
+            }
+
+            runOnUiThread {
+                webView.loadUrl(appUrl(path))
+            }
+        }.start()
     }
 
     private fun handleSelectedFiles(uris: List<Uri>) {
@@ -240,7 +279,7 @@ class MainActivity : AppCompatActivity() {
         // Handle deep link (e.g. ollama://auth/callback)
         intent.data?.let { uri ->
             val path = uri.path ?: "/"
-            webView.loadUrl("http://127.0.0.1:$serverPort$path?token=$serverToken")
+            loadApp(path)
         }
     }
 

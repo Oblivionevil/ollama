@@ -412,7 +412,7 @@ func TestAuthGithubAcceptsOneTimeDesktopToken(t *testing.T) {
 				UserCode:        "ABCD-EFGH",
 				VerificationURI: "https://github.com/login/device",
 				ExpiresAt:       time.Now().Add(time.Hour),
-				Status:          "pending",
+				Status:          "complete",
 			},
 		},
 	}
@@ -423,11 +423,8 @@ func TestAuthGithubAcceptsOneTimeDesktopToken(t *testing.T) {
 
 	handler.ServeHTTP(firstResp, firstReq)
 
-	if firstResp.Code != http.StatusFound {
-		t.Fatalf("first response status = %d, want %d", firstResp.Code, http.StatusFound)
-	}
-	if location := firstResp.Header().Get("Location"); location != "/auth/github?id=flow-123" {
-		t.Fatalf("location = %q, want %q", location, "/auth/github?id=flow-123")
+	if firstResp.Code != http.StatusOK {
+		t.Fatalf("first response status = %d, want %d", firstResp.Code, http.StatusOK)
 	}
 
 	result := firstResp.Result()
@@ -439,9 +436,14 @@ func TestAuthGithubAcceptsOneTimeDesktopToken(t *testing.T) {
 	if cookies[0].Name != "token" || cookies[0].Value != "desktop-token" {
 		t.Fatalf("cookie = %+v, want desktop token cookie", cookies[0])
 	}
+	if !strings.Contains(firstResp.Body.String(), "ABCD-EFGH") {
+		t.Fatalf("body = %q, want device code", firstResp.Body.String())
+	}
+	if !strings.Contains(firstResp.Body.String(), `const token = "desktop-token";`) {
+		t.Fatalf("body = %q, want inline auth token", firstResp.Body.String())
+	}
 
-	secondReq := httptest.NewRequest(http.MethodGet, "/auth/github?id=flow-123", nil)
-	secondReq.AddCookie(cookies[0])
+	secondReq := httptest.NewRequest(http.MethodGet, "/auth/github/status?id=flow-123&token=desktop-token", nil)
 	secondResp := httptest.NewRecorder()
 
 	handler.ServeHTTP(secondResp, secondReq)
@@ -449,8 +451,13 @@ func TestAuthGithubAcceptsOneTimeDesktopToken(t *testing.T) {
 	if secondResp.Code != http.StatusOK {
 		t.Fatalf("second response status = %d, want %d", secondResp.Code, http.StatusOK)
 	}
-	if !strings.Contains(secondResp.Body.String(), "ABCD-EFGH") {
-		t.Fatalf("body = %q, want device code", secondResp.Body.String())
+
+	var status copilotAuthStatusResponse
+	if err := json.NewDecoder(secondResp.Body).Decode(&status); err != nil {
+		t.Fatalf("decode status response: %v", err)
+	}
+	if status.Status != "complete" {
+		t.Fatalf("status = %q, want %q", status.Status, "complete")
 	}
 }
 

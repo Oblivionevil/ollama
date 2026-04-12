@@ -168,6 +168,13 @@ type copilotAuthStatusResponse struct {
 	Error           string    `json:"error,omitempty"`
 }
 
+type copilotAuthPageData struct {
+	FlowID          string
+	Token           string
+	UserCode        string
+	VerificationURI string
+}
+
 var copilotAuthPageTemplate = template.Must(template.New("copilot-auth").Parse(`<!doctype html>
 <html lang="en">
 <head>
@@ -265,7 +272,17 @@ var copilotAuthPageTemplate = template.Must(template.New("copilot-auth").Parse(`
   </main>
   <script>
     const statusEl = document.getElementById("status");
-    const statusUrl = "/auth/github/status?id={{ .FlowID }}";
+		const flowId = "{{ .FlowID }}";
+		const token = "{{ .Token }}";
+		const statusParams = new URLSearchParams({ id: flowId });
+		if (token) {
+			statusParams.set("token", token);
+
+			const cleanUrl = new URL(window.location.href);
+			cleanUrl.searchParams.delete("token");
+			window.history.replaceState({}, "", cleanUrl);
+		}
+		const statusUrl = "/auth/github/status?" + statusParams.toString();
     async function refreshStatus() {
       try {
         const response = await fetch(statusUrl, { cache: "no-store" });
@@ -1137,11 +1154,17 @@ func (s *Server) copilotAuthPageHandler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	authToken := ""
+	if token := r.URL.Query().Get("token"); token != "" && token == s.Token {
+		authToken = token
+	}
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := copilotAuthPageTemplate.Execute(w, map[string]string{
-		"FlowID":          flow.ID,
-		"UserCode":        flow.UserCode,
-		"VerificationURI": flow.VerificationURI,
+	if err := copilotAuthPageTemplate.Execute(w, copilotAuthPageData{
+		FlowID:          flow.ID,
+		Token:           authToken,
+		UserCode:        flow.UserCode,
+		VerificationURI: flow.VerificationURI,
 	}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}

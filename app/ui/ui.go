@@ -151,16 +151,9 @@ func (s *Server) Handler() http.Handler {
 
 			// Don't check for token in development mode
 			if !s.Dev {
+				validTokenQuery := false
 				if token := r.URL.Query().Get("token"); token != "" && token == s.Token {
-					query := r.URL.Query()
-					query.Del("token")
-
-					redirectURL := *r.URL
-					redirectURL.RawQuery = query.Encode()
-					location := redirectURL.String()
-					if location == "" {
-						location = "/"
-					}
+					validTokenQuery = true
 
 					http.SetCookie(w, &http.Cookie{
 						Name:     "token",
@@ -169,21 +162,40 @@ func (s *Server) Handler() http.Handler {
 						HttpOnly: true,
 						SameSite: http.SameSiteStrictMode,
 					})
-					http.Redirect(w, r, location, http.StatusFound)
-					return
+
+					if s.copilotAllowsInlineTokenAuth(r) {
+						// The mobile sign-in flow opens localhost auth pages in an external browser.
+						// Some browsers fail to carry the freshly set cookie across an immediate redirect,
+						// so allow the token-bearing auth request to complete inline.
+					} else {
+						query := r.URL.Query()
+						query.Del("token")
+
+						redirectURL := *r.URL
+						redirectURL.RawQuery = query.Encode()
+						location := redirectURL.String()
+						if location == "" {
+							location = "/"
+						}
+
+						http.Redirect(w, r, location, http.StatusFound)
+						return
+					}
 				}
 
-				cookie, err := r.Cookie("token")
-				if err != nil {
-					w.WriteHeader(http.StatusForbidden)
-					json.NewEncoder(w).Encode(map[string]string{"error": "Token is required"})
-					return
-				}
+				if !validTokenQuery {
+					cookie, err := r.Cookie("token")
+					if err != nil {
+						w.WriteHeader(http.StatusForbidden)
+						json.NewEncoder(w).Encode(map[string]string{"error": "Token is required"})
+						return
+					}
 
-				if cookie.Value != s.Token {
-					w.WriteHeader(http.StatusForbidden)
-					json.NewEncoder(w).Encode(map[string]string{"error": "Token is required"})
-					return
+					if cookie.Value != s.Token {
+						w.WriteHeader(http.StatusForbidden)
+						json.NewEncoder(w).Encode(map[string]string{"error": "Token is required"})
+						return
+					}
 				}
 			}
 
@@ -280,6 +292,14 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("DELETE /", s.appHandler())
 
 	return mux
+}
+
+func (s *Server) copilotAllowsInlineTokenAuth(r *http.Request) bool {
+	if r.Method != http.MethodGet {
+		return false
+	}
+
+	return r.URL.Path == "/auth/github" || r.URL.Path == "/auth/github/status"
 }
 
 // handleError renders appropriate error responses based on request type
