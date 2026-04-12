@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   IMAGE_EXTENSIONS,
   TEXT_FILE_EXTENSIONS,
+  normalizeFilename,
   validateFile,
 } from "./fileValidation";
 
@@ -67,6 +68,14 @@ describe("fileValidation", () => {
       expect(result.valid).toBe(true);
     });
 
+    it("should accept pasted images without filenames when vision capability is enabled", () => {
+      const file = createMockFile("", 1024, "image/png");
+      const result = validateFile(file, {
+        hasVisionCapability: true,
+      });
+      expect(result.valid).toBe(true);
+    });
+
     it("should accept JPEG images when vision capability is enabled", () => {
       const file = createMockFile("test.jpg", 1024, "image/jpeg");
       const result = validateFile(file, {
@@ -110,6 +119,23 @@ describe("fileValidation", () => {
       });
       expect(result.valid).toBe(false);
       expect(result.error).toBe("Custom error");
+    });
+  });
+
+  describe("normalizeFilename", () => {
+    const createMockFile = (name: string, type: string): File => {
+      const blob = new Blob(["test content"], { type });
+      return new File([blob], name, { type });
+    };
+
+    it("creates a usable filename for pasted PNG screenshots", () => {
+      const file = createMockFile("", "image/png");
+      expect(normalizeFilename(file)).toBe("pasted-image.png");
+    });
+
+    it("appends an extension when the clipboard file has a MIME type but no extension", () => {
+      const file = createMockFile("Screenshot", "image/png");
+      expect(normalizeFilename(file)).toBe("Screenshot.png");
     });
   });
 

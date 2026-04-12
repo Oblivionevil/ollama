@@ -19,6 +19,7 @@ import (
 
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/app/store"
+	"github.com/ollama/ollama/app/ui/responses"
 )
 
 func TestHandlePostApiSettings(t *testing.T) {
@@ -115,6 +116,50 @@ func TestHandlePostApiSettings(t *testing.T) {
 						t.Errorf("Models: got %q, want %q", savedSettings.Models, tt.requested.Models)
 					}
 				}
+			}
+		})
+	}
+}
+
+
+func TestChatRequestHasContent(t *testing.T) {
+	tests := []struct {
+		name string
+		req  responses.ChatRequest
+		want bool
+	}{
+		{
+			name: "plain prompt",
+			req: responses.ChatRequest{Prompt: "hello"},
+			want: true,
+		},
+		{
+			name: "attachment only",
+			req: responses.ChatRequest{
+				Prompt: "",
+				Attachments: []responses.Attachment{{
+					Filename: "pasted-image.png",
+					Data:     "AQID",
+				}},
+			},
+			want: true,
+		},
+		{
+			name: "whitespace prompt without attachments",
+			req: responses.ChatRequest{Prompt: "   \n\t  "},
+			want: false,
+		},
+		{
+			name: "empty prompt without attachments",
+			req: responses.ChatRequest{},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := chatRequestHasContent(tt.req); got != tt.want {
+				t.Fatalf("chatRequestHasContent() = %v, want %v", got, tt.want)
 			}
 		})
 	}

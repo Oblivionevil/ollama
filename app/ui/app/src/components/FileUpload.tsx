@@ -41,6 +41,20 @@ export function FileUpload({
     return dataTransfer.types.includes("Files");
   }, []);
 
+  const hasClipboardFiles = useCallback((clipboardData: DataTransfer | null) => {
+    if (!clipboardData) {
+      return false;
+    }
+
+    if (clipboardData.files.length > 0) {
+      return true;
+    }
+
+    return Array.from(clipboardData.items || []).some(
+      (item) => item.kind === "file",
+    );
+  }, []);
+
   // Helper function to read directory contents
   const readDirectory = useCallback(
     async (entry: FileSystemDirectoryEntry): Promise<File[]> => {
@@ -147,40 +161,24 @@ export function FileUpload({
   // Paste event handler
   const handlePaste = useCallback(
     async (e: ClipboardEvent) => {
-      // Check if clipboard contains files
-      if (e.clipboardData && e.clipboardData.files.length > 0) {
-        // Check if there's text data in the clipboard
-        // Only process files if there's no text data
-        const hasTextData =
-          e.clipboardData.types.includes("text/plain") &&
-          e.clipboardData.getData("text/plain").trim().length > 0;
-
-        if (hasTextData) {
-          return;
-        }
-
-        e.preventDefault();
-
-        // Create a synthetic DataTransfer object for our processFiles function
-        const items = Array.from(e.clipboardData.items);
-        const syntheticDataTransfer = {
-          files: e.clipboardData.files,
-          items: {
-            ...items,
-            length: items.length,
-            add: () => null,
-            clear: () => {},
-            remove: () => null,
-            [Symbol.iterator]: () => items[Symbol.iterator](),
-          } as DataTransferItemList,
-          types: e.clipboardData.types,
-          getData: (format: string) => e.clipboardData!.getData(format),
-        } as DataTransfer;
-
-        await processFiles(syntheticDataTransfer);
+      if (!hasClipboardFiles(e.clipboardData)) {
+        return;
       }
+
+      // Check if there's text data in the clipboard
+      // Only process files if there's no text data
+      const hasTextData =
+        e.clipboardData!.types.includes("text/plain") &&
+        e.clipboardData!.getData("text/plain").trim().length > 0;
+
+      if (hasTextData) {
+        return;
+      }
+
+      e.preventDefault();
+      await processFiles(e.clipboardData!);
     },
-    [processFiles],
+    [hasClipboardFiles, processFiles],
   );
 
   const handleDragOver = useCallback((e: React.DragEvent) => {

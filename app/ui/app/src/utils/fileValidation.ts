@@ -66,6 +66,50 @@ export interface ValidationResult {
   error?: string;
 }
 
+function extensionForMimeType(mimeType: string): string | null {
+  switch (mimeType.toLowerCase()) {
+    case "image/png":
+      return "png";
+    case "image/jpeg":
+      return "jpg";
+    case "image/webp":
+      return "webp";
+    case "image/gif":
+      return "gif";
+    case "text/plain":
+      return "txt";
+    case "text/markdown":
+      return "md";
+    case "application/json":
+      return "json";
+    default:
+      return null;
+  }
+}
+
+export function normalizeFilename(file: File): string {
+  const rawName = file.name.trim();
+  const inferredExtension = extensionForMimeType(file.type);
+
+  if (rawName.length === 0) {
+    if (inferredExtension) {
+      const baseName = file.type.startsWith("image/")
+        ? "pasted-image"
+        : "pasted-file";
+      return `${baseName}.${inferredExtension}`;
+    }
+
+    return "pasted-file";
+  }
+
+  const hasExtension = rawName.includes(".") && rawName.split(".").pop() !== "";
+  if (!hasExtension && inferredExtension) {
+    return `${rawName}.${inferredExtension}`;
+  }
+
+  return rawName;
+}
+
 export function validateFile(
   file: File,
   options: FileValidationOptions = {},
@@ -78,7 +122,8 @@ export function validateFile(
   } = options;
 
   const MAX_FILE_SIZE = maxFileSize * 1024 * 1024; // Convert MB to bytes
-  const fileExtension = file.name.toLowerCase().split(".").pop();
+  const normalizedFilename = normalizeFilename(file);
+  const fileExtension = normalizedFilename.toLowerCase().split(".").pop();
 
   // Custom validation first
   if (customValidator) {
@@ -134,11 +179,12 @@ export async function processFiles(
   const errors: Array<{ filename: string; error: string }> = [];
 
   for (const file of files) {
+    const normalizedFilename = normalizeFilename(file);
     const validation = validateFile(file, options);
 
     if (!validation.valid) {
       errors.push({
-        filename: file.name,
+        filename: normalizedFilename,
         error: validation.error || "File validation failed",
       });
       continue;
@@ -147,14 +193,14 @@ export async function processFiles(
     try {
       const fileBytes = await readFileAsBytes(file);
       validFiles.push({
-        filename: file.name,
+        filename: normalizedFilename,
         data: fileBytes,
         type: file.type || undefined,
       });
     } catch (error) {
-      console.error(`Error reading file ${file.name}:`, error);
+      console.error(`Error reading file ${normalizedFilename}:`, error);
       errors.push({
-        filename: file.name,
+        filename: normalizedFilename,
         error: "Error reading file",
       });
     }

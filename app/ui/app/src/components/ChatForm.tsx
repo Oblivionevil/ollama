@@ -525,7 +525,13 @@ function ChatForm({
   }, [isStreaming, editingMessage, onCancelEdit, navigateToNextElement]);
 
   const handleSubmit = async () => {
-    if (!message.content.trim() || isStreaming || isDownloading) return;
+    if (
+      (!message.content.trim() && message.attachments.length === 0) ||
+      isStreaming ||
+      isDownloading
+    ) {
+      return;
+    }
 
     // Check if cloud mode is enabled but user is not authenticated
     if (shouldShowLoginBanner) {
@@ -1012,7 +1018,7 @@ function ChatForm({
               disabled={
                 !isStreaming &&
                 !isDownloading &&
-                (!message.content.trim() ||
+                ((!message.content.trim() && message.attachments.length === 0) ||
                   shouldShowLoginBanner ||
                   message.fileErrors.length > 0)
               }

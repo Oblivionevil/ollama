@@ -609,8 +609,9 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) error {
 		return fmt.Errorf("empty model")
 	}
 
-	// Don't allow empty messages unless forceUpdate is true
-	if req.Prompt == "" && !req.ForceUpdate {
+	// Allow attachment-only submissions. Only reject requests that have neither
+	// prompt content nor attachments unless forceUpdate is true.
+	if !chatRequestHasContent(req) && !req.ForceUpdate {
 		return fmt.Errorf("empty message")
 	}
 
@@ -914,6 +915,10 @@ func chatInfoFromChat(chat store.Chat) responses.ChatInfo {
 		CreatedAt:   chat.CreatedAt,
 		UpdatedAt:   updatedAt,
 	}
+}
+
+func chatRequestHasContent(req responses.ChatRequest) bool {
+	return strings.TrimSpace(req.Prompt) != "" || len(req.Attachments) > 0
 }
 
 func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) error {
