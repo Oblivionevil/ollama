@@ -110,6 +110,7 @@ function ChatForm({
   const { mutate: sendMessageMutation } = useSendMessage(chatId);
   const navigate = useNavigate();
   const isStreaming = useIsStreaming(chatId);
+  const previousIsStreamingRef = useRef(isStreaming);
   const cancelMessage = useCancelMessage();
   const isDownloading = isDownloadingModel;
   const { selectedModel } = useSelectedModel();
@@ -284,6 +285,10 @@ function ChatForm({
   };
 
   const activeFeatureForBanner = getActiveFeatureForBanner();
+  const isAndroid =
+    typeof navigator !== "undefined" && /Android/i.test(navigator.userAgent);
+  const allowInitialTextareaFocus = autoFocus && !isAndroid;
+  const allowStreamingCompletionFocus = !isAndroid;
 
   const resetChatForm = () => {
     setMessage({
@@ -349,20 +354,41 @@ function ChatForm({
     resetChatForm();
   }, [chatId]);
 
-  // Auto-focus textarea when autoFocus is true or when streaming completes (but not when editing)
+  // Auto-focus textarea on desktop/web only. Android should not open the soft keyboard
+  // when navigating between chats; the user should explicitly tap the message field.
   useEffect(() => {
-    if ((autoFocus || !isStreaming) && textareaRef.current && !editingMessage) {
-      const timer = setTimeout(
-        () => {
-          textareaRef.current?.focus();
-        },
-        autoFocus ? 0 : 100,
-      );
-      return () => clearTimeout(timer);
+    const justFinishedStreaming = previousIsStreamingRef.current && !isStreaming;
+    previousIsStreamingRef.current = isStreaming;
+
+    if (
+      !textareaRef.current ||
+      editingMessage ||
+      (!allowInitialTextareaFocus &&
+        !(allowStreamingCompletionFocus && justFinishedStreaming))
+    ) {
+      return;
     }
-  }, [autoFocus, isStreaming, editingMessage]);
+
+    const timer = setTimeout(
+      () => {
+        textareaRef.current?.focus();
+      },
+      allowInitialTextareaFocus ? 0 : 100,
+    );
+
+    return () => clearTimeout(timer);
+  }, [
+    allowInitialTextareaFocus,
+    allowStreamingCompletionFocus,
+    isStreaming,
+    editingMessage,
+  ]);
 
   const focusChatFormInput = () => {
+    if (isAndroid) {
+      return;
+    }
+
     // Focus textarea after model selection or navigation
     if (textareaRef.current) {
       setTimeout(() => {
@@ -399,7 +425,7 @@ function ChatForm({
     if (chatId !== "new") {
       focusChatFormInput();
     }
-  }, [chatId]);
+  }, [chatId, isAndroid]);
 
   // Global keyboard and paste event handlers
   useEffect(() => {
