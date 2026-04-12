@@ -177,11 +177,16 @@ jobs:
             release_apk="android/app/build/outputs/apk/release/app-release-unsigned.apk"
           fi
           [ -f "$release_apk" ]
+          release_aab="android/app/build/outputs/bundle/release/app-release.aab"
+          [ -f "$release_aab" ]
           cp "$release_apk" dist/Ollama-android-release.apk
+          cp "$release_aab" dist/Ollama-android-release.aab
       - uses: actions/upload-artifact@v7
         with:
           name: bundles-android
-          path: dist/Ollama-android-release.apk
+          path: |
+            dist/Ollama-android-release.apk
+            dist/Ollama-android-release.aab
 
   windows-package:
     needs: [setup, windows-build]
@@ -319,7 +324,7 @@ jobs:
         shell: bash
         run: |
           RELEASE_TAG="${{ needs.setup.outputs.release_tag }}"
-          for payload in dist/windows-ollama-app-*.exe dist/OllamaSetup.exe dist/*.msix dist/*.msixbundle dist/*.appinstaller dist/*.apk; do
+          for payload in dist/windows-ollama-app-*.exe dist/OllamaSetup.exe dist/*.msix dist/*.msixbundle dist/*.appinstaller dist/*.apk dist/*.aab; do
             [ -e "$payload" ] || continue
             gh release upload "$RELEASE_TAG" "$payload" --clobber
           done

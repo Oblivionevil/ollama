@@ -10,7 +10,7 @@
 #
 # Usage:
 #   ./scripts/build_android.sh          # debug APK
-#   ./scripts/build_android.sh release  # release APK
+#   ./scripts/build_android.sh release  # release APK + AAB
 #
 set -euo pipefail
 
@@ -125,6 +125,18 @@ find_release_apk() {
     return 1
 }
 
+find_release_bundle() {
+    local bundle_dir="$ANDROID_DIR/app/build/outputs/bundle/release"
+
+    if [ -f "$bundle_dir/app-release.aab" ]; then
+        printf '%s\n' "app/build/outputs/bundle/release/app-release.aab"
+        return 0
+    fi
+
+    echo "Release AAB not found under $bundle_dir" >&2
+    return 1
+}
+
 rm -rf "$JNI_LIB_DIR" "$ANDROID_DIR/.build"
 build_gojni arm64 arm64-v8a aarch64-linux-android
 build_gojni amd64 x86_64 x86_64-linux-android
@@ -143,11 +155,14 @@ if ! command -v "$GRADLE_BIN" &>/dev/null; then
 fi
 
 BUILD_TYPE="${1:-debug}"
+APK_PATH=""
+BUNDLE_PATH=""
 if [ "$BUILD_TYPE" = "release" ]; then
-    "$GRADLE_BIN" -p "$ANDROID_DIR" assembleRelease \
+    "$GRADLE_BIN" -p "$ANDROID_DIR" assembleRelease bundleRelease \
         -PappVersionName="$APP_VERSION_NAME" \
         -PappVersionCode="$APP_VERSION_CODE"
     APK_PATH="$(find_release_apk)"
+    BUNDLE_PATH="$(find_release_bundle)"
 else
     "$GRADLE_BIN" -p "$ANDROID_DIR" assembleDebug \
         -PappVersionName="$APP_VERSION_NAME" \
@@ -158,3 +173,6 @@ fi
 echo ""
 echo "=== Build complete ==="
 echo "APK: $ANDROID_DIR/$APK_PATH"
+if [ -n "$BUNDLE_PATH" ]; then
+    echo "AAB: $ANDROID_DIR/$BUNDLE_PATH"
+fi
