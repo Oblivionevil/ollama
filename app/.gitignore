@@ -4,6 +4,8 @@ ollama.syso
 /app/app
 /app/squirrel
 ollama
+!cmd/android/ollama/
+!cmd/android/ollama/**
 *cover*
 .vscode
 .env
