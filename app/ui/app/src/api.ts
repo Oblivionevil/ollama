@@ -351,6 +351,16 @@ export async function deleteChat(chatId: string): Promise<void> {
   }
 }
 
+export async function deleteAllChats(): Promise<void> {
+  const response = await fetch(`${API_BASE}/api/v1/chats`, {
+    method: "DELETE",
+  });
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(error || "Failed to delete chats");
+  }
+}
+
 export async function fetchHealth(): Promise<boolean> {
   try {
     const response = await fetch(`${API_BASE}/api/v1/health`, {

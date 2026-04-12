@@ -114,6 +114,17 @@ func (s *Server) deleteChatRemotely(session *store.AuthSession, chatID string) e
 	return s.deleteLocalChatCache(chatID)
 }
 
+func (s *Server) deleteAllChatsRemotely(session *store.AuthSession) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	if err := s.deleteAllChatsFromGitHub(ctx, session); err != nil {
+		return err
+	}
+
+	return s.deleteAllLocalChatCaches()
+}
+
 func (s *Server) deleteLocalChatCache(chatID string) error {
 	if s.Store == nil {
 		return nil
@@ -122,6 +133,26 @@ func (s *Server) deleteLocalChatCache(chatID string) error {
 	err := s.Store.DeleteChat(chatID)
 	if err != nil && !errors.Is(err, not.Found) {
 		return err
+	}
+
+	return nil
+}
+
+func (s *Server) deleteAllLocalChatCaches() error {
+	if s.Store == nil {
+		return nil
+	}
+
+	localChats, err := s.Store.Chats()
+	if err != nil {
+		return err
+	}
+
+	for _, chat := range localChats {
+		err := s.Store.DeleteChat(chat.ID)
+		if err != nil && !errors.Is(err, not.Found) {
+			return err
+		}
 	}
 
 	return nil
@@ -267,6 +298,24 @@ func (s *Server) deleteChatFromGitHub(ctx context.Context, session *store.AuthSe
 	}
 
 	return nil
+}
+
+func (s *Server) deleteAllChatsFromGitHub(ctx context.Context, session *store.AuthSession) error {
+	manifest, err := s.loadGitHubChatManifest(ctx, session)
+	if err != nil {
+		return err
+	}
+
+	for _, info := range manifest.Chats {
+		if err := s.deleteGitHubFile(ctx, session, s.githubChatFilePath(info.ID), fmt.Sprintf("Delete chat %s", info.ID)); err != nil {
+			return err
+		}
+	}
+
+	manifest.Chats = []responses.ChatInfo{}
+	manifest.SyncedAt = time.Now().UTC()
+
+	return s.upsertGitHubJSONFile(ctx, session, s.githubChatManifestPath(), manifest, "Clear all chats")
 }
 
 func (s *Server) loadGitHubChatManifest(ctx context.Context, session *store.AuthSession) (*githubChatManifest, error) {

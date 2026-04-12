@@ -14,8 +14,9 @@ import { Settings as SettingsType } from "@/gotypes";
 import { useNavigate } from "@tanstack/react-router";
 import { useUser } from "@/hooks/useUser";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { getSettings, updateSettings } from "@/api";
+import { deleteAllChats, getSettings, updateSettings } from "@/api";
 import { openExternalUrl } from "@/lib/open-external";
+import { useChats } from "@/hooks/useChats";
 
 function AnimatedDots() {
   return (
@@ -46,8 +47,10 @@ export default function Settings() {
   } = useUser();
   const [isAwaitingConnection, setIsAwaitingConnection] = useState(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [deleteChatsError, setDeleteChatsError] = useState<string | null>(null);
   const [pollingInterval, setPollingInterval] = useState<number | null>(null);
   const navigate = useNavigate();
+  const { data: chatsData } = useChats();
 
   const {
     data: settingsData,
@@ -66,6 +69,21 @@ export default function Settings() {
       queryClient.invalidateQueries({ queryKey: ["settings"] });
       setShowSaved(true);
       setTimeout(() => setShowSaved(false), 1500);
+    },
+  });
+
+  const deleteAllChatsMutation = useMutation({
+    mutationFn: deleteAllChats,
+    onSuccess: async () => {
+      setDeleteChatsError(null);
+      queryClient.removeQueries({ queryKey: ["chat"] });
+      queryClient.removeQueries({ queryKey: ["chatError"] });
+      await queryClient.invalidateQueries({ queryKey: ["chats"] });
+    },
+    onError: (error) => {
+      setDeleteChatsError(
+        error instanceof Error ? error.message : "Failed to delete chats",
+      );
     },
   });
 
@@ -135,6 +153,20 @@ export default function Settings() {
     }
   };
 
+  const handleDeleteAllChats = async () => {
+    setDeleteChatsError(null);
+
+    const confirmed = window.confirm(
+      "Are you sure you want to delete all chats? This cannot be undone.",
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    await deleteAllChatsMutation.mutateAsync();
+  };
+
   const handleConnectGitHubAccount = async () => {
     setConnectionError(null);
 
@@ -180,6 +212,7 @@ export default function Settings() {
   }
 
   const isWindows = navigator.platform.toLowerCase().includes("win");
+  const hasChats = (chatsData?.chatInfos?.length ?? 0) > 0;
   const handleCloseSettings = () => {
     navigate({ to: "/c/$chatId", params: { chatId: "new" } });
   };
@@ -359,15 +392,35 @@ export default function Settings() {
             </div>
           )}
 
-          <div className="mt-6 flex justify-end px-4">
-            <Button
-              type="button"
-              color="white"
-              className="px-3"
-              onClick={handleResetToDefaults}
-            >
-              Reset to defaults
-            </Button>
+          <div className="mt-6 flex flex-col gap-3 px-4">
+            <div className="flex justify-end gap-3">
+              <Button
+                type="button"
+                color="red"
+                className="px-3"
+                onClick={() => void handleDeleteAllChats()}
+                disabled={!hasChats || deleteAllChatsMutation.isPending}
+              >
+                {deleteAllChatsMutation.isPending
+                  ? "Deleting chats..."
+                  : "Delete all chats"}
+              </Button>
+              <Button
+                type="button"
+                color="white"
+                className="px-3"
+                onClick={handleResetToDefaults}
+              >
+                Reset to defaults
+              </Button>
+            </div>
+            {deleteChatsError && (
+              <div className="flex justify-end">
+                <Text className="text-sm text-red-600 dark:text-red-400">
+                  {deleteChatsError}
+                </Text>
+              </div>
+            )}
           </div>
         </div>
 

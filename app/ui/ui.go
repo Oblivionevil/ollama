@@ -259,6 +259,7 @@ func (s *Server) Handler() http.Handler {
 
 	// API routes - handle first to take precedence
 	mux.Handle("GET /api/v1/chats", handle(s.listChats))
+	mux.Handle("DELETE /api/v1/chats", handle(s.deleteAllChats))
 	mux.Handle("GET /api/v1/chat/{id}", handle(s.getChat))
 	mux.Handle("POST /api/v1/chat/{id}", handle(s.chat))
 	mux.Handle("DELETE /api/v1/chat/{id}", handle(s.deleteChat))
@@ -858,6 +859,33 @@ func (s *Server) deleteChat(w http.ResponseWriter, r *http.Request) error {
 
 	if err := s.deleteChatRemotely(session, cid); err != nil {
 		return fmt.Errorf("failed to delete chat: %w", err)
+	}
+
+	w.WriteHeader(http.StatusOK)
+	return nil
+}
+
+func (s *Server) deleteAllChats(w http.ResponseWriter, r *http.Request) error {
+	session, err := s.githubChatAuthorizedSession(r.Context())
+	if err != nil {
+		if isAuthorizationError(err) {
+			if err := s.deleteAllLocalChatCaches(); err != nil {
+				return fmt.Errorf("failed to delete local chats: %w", err)
+			}
+
+			w.WriteHeader(http.StatusOK)
+			return nil
+		}
+
+		return err
+	}
+
+	if err := s.migrateLocalChatsToGitHub(r.Context(), session); err != nil {
+		return fmt.Errorf("failed to prepare chats: %w", err)
+	}
+
+	if err := s.deleteAllChatsRemotely(session); err != nil {
+		return fmt.Errorf("failed to delete chats: %w", err)
 	}
 
 	w.WriteHeader(http.StatusOK)
