@@ -7,6 +7,7 @@ import android.os.Bundle
 import android.util.Base64
 import android.util.Log
 import android.view.View
+import android.widget.FrameLayout
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
@@ -17,7 +18,9 @@ import android.widget.ProgressBar
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 import ollama.Ollama
 import org.json.JSONArray
 import org.json.JSONObject
@@ -31,6 +34,7 @@ class MainActivity : AppCompatActivity() {
         private const val TAG = "OllamaActivity"
     }
 
+    private lateinit var root: FrameLayout
     private lateinit var webView: WebView
     private lateinit var loading: ProgressBar
 
@@ -58,13 +62,35 @@ class MainActivity : AppCompatActivity() {
         WindowCompat.setDecorFitsSystemWindows(window, false)
         setContentView(R.layout.activity_main)
 
+        root = findViewById(R.id.root)
         webView = findViewById(R.id.webview)
         loading = findViewById(R.id.loading)
         webView.visibility = View.INVISIBLE
 
+        applyWindowInsets()
         startServer()
         setupWebView()
         loadApp()
+    }
+
+    private fun applyWindowInsets() {
+        val initialLeft = root.paddingLeft
+        val initialTop = root.paddingTop
+        val initialRight = root.paddingRight
+        val initialBottom = root.paddingBottom
+
+        ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
+            val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            view.setPadding(
+                initialLeft + systemBars.left,
+                initialTop + systemBars.top,
+                initialRight + systemBars.right,
+                initialBottom + systemBars.bottom,
+            )
+            insets
+        }
+
+        ViewCompat.requestApplyInsets(root)
     }
 
     private fun startServer() {
