@@ -105,13 +105,14 @@ export function FileUpload({
         for (const item of dataTransfer.items) {
           if (item.kind === "file") {
             const entry = item.webkitGetAsEntry?.();
-            if (entry?.isFile) {
-              const file = item.getAsFile();
-              if (file) allFiles.push(file);
-            } else if (entry?.isDirectory) {
+            if (entry?.isDirectory) {
               const dirEntry = entry as FileSystemDirectoryEntry;
               const dirFiles = await readDirectory(dirEntry);
               allFiles.push(...dirFiles);
+            } else {
+              // entry is null for clipboard paste items; treat as plain file
+              const file = item.getAsFile();
+              if (file) allFiles.push(file);
             }
           }
         }
