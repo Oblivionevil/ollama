@@ -262,6 +262,138 @@ func TestGitHubChatAuthorizedSessionClearsSessionWithoutRepoAccess(t *testing.T)
 	}
 }
 
+func TestDeleteAllChatsRemovesRemoteAndLocalChats(t *testing.T) {
+	fakeAPI := newFakeGitHubContentsAPI(t)
+	testStore := &store.Store{DBPath: filepath.Join(t.TempDir(), "db.sqlite")}
+	defer testStore.Close()
+
+	if err := testStore.SetAuthSession(store.AuthSession{AccessToken: "gh-test-token"}); err != nil {
+		t.Fatalf("SetAuthSession() error = %v", err)
+	}
+
+	localChat := store.Chat{
+		ID:        "local-chat",
+		Title:     "Local chat",
+		CreatedAt: time.Unix(1710000500, 0).UTC(),
+		Messages: []store.Message{
+			store.NewMessage("user", "delete me too", nil),
+		},
+	}
+	if err := testStore.SetChat(localChat); err != nil {
+		t.Fatalf("SetChat() error = %v", err)
+	}
+
+	remoteChat := store.Chat{
+		ID:        "remote-chat",
+		Title:     "Remote chat",
+		CreatedAt: time.Unix(1710000600, 0).UTC(),
+		Messages: []store.Message{
+			store.NewMessage("user", "remove me", nil),
+		},
+	}
+	manifest := githubChatManifest{
+		Chats: []responses.ChatInfo{chatInfoFromChat(remoteChat)},
+		SyncedAt: time.Now().UTC(),
+	}
+
+	server := &Server{
+		Store:            testStore,
+		githubAPIBaseURL: fakeAPI.server.URL,
+		githubChatRepo:   defaultGitHubChatRepo,
+	}
+	fakeAPI.putJSON(t, server.githubChatManifestPath(), manifest)
+	fakeAPI.putJSON(t, server.githubChatFilePath(remoteChat.ID), remoteChat)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/chats", nil)
+	rr := httptest.NewRecorder()
+
+	if err := server.deleteAllChats(rr, req); err != nil {
+		t.Fatalf("deleteAllChats() error = %v", err)
+	}
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusOK)
+	}
+
+	manifestData := fakeAPI.fileContents(t, server.githubChatManifestPath())
+	var updatedManifest githubChatManifest
+	if err := json.Unmarshal(manifestData, &updatedManifest); err != nil {
+		t.Fatalf("unmarshal manifest: %v", err)
+	}
+	if len(updatedManifest.Chats) != 0 {
+		t.Fatalf("manifest chat count = %d, want 0", len(updatedManifest.Chats))
+	}
+
+	if fakeAPI.hasFile(server.githubChatFilePath(remoteChat.ID)) {
+		t.Fatalf("remote chat file %q still exists", remoteChat.ID)
+	}
+	if fakeAPI.hasFile(server.githubChatFilePath(localChat.ID)) {
+		t.Fatalf("migrated local chat file %q still exists", localChat.ID)
+	}
+
+	chatInfos, err := testStore.Chats()
+	if err != nil {
+		t.Fatalf("Chats() error = %v", err)
+	}
+	if len(chatInfos) != 0 {
+		t.Fatalf("local chat count = %d, want 0", len(chatInfos))
+	}
+}
+
+func TestDeleteAllChatsHonorsRequestContext(t *testing.T) {
+	fakeAPI := newFakeGitHubContentsAPI(t)
+	fakeAPI.requestDelay = 100 * time.Millisecond
+
+	testStore := &store.Store{DBPath: filepath.Join(t.TempDir(), "db.sqlite")}
+	defer testStore.Close()
+
+	if err := testStore.SetAuthSession(store.AuthSession{AccessToken: "gh-test-token"}); err != nil {
+		t.Fatalf("SetAuthSession() error = %v", err)
+	}
+
+	chatA := store.Chat{
+		ID:        "chat-a",
+		Title:     "Chat A",
+		CreatedAt: time.Unix(1710000700, 0).UTC(),
+		Messages: []store.Message{
+			store.NewMessage("user", "a", nil),
+		},
+	}
+	chatB := store.Chat{
+		ID:        "chat-b",
+		Title:     "Chat B",
+		CreatedAt: time.Unix(1710000800, 0).UTC(),
+		Messages: []store.Message{
+			store.NewMessage("user", "b", nil),
+		},
+	}
+
+	server := &Server{
+		Store:            testStore,
+		githubAPIBaseURL: fakeAPI.server.URL,
+		githubChatRepo:   defaultGitHubChatRepo,
+	}
+	fakeAPI.putJSON(t, server.githubChatManifestPath(), githubChatManifest{
+		Chats: []responses.ChatInfo{chatInfoFromChat(chatA), chatInfoFromChat(chatB)},
+		SyncedAt: time.Now().UTC(),
+	})
+	fakeAPI.putJSON(t, server.githubChatFilePath(chatA.ID), chatA)
+	fakeAPI.putJSON(t, server.githubChatFilePath(chatB.ID), chatB)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/chats", nil).WithContext(ctx)
+	rr := httptest.NewRecorder()
+
+	err := server.deleteAllChats(rr, req)
+	if err == nil {
+		t.Fatal("deleteAllChats() error = nil, want context deadline exceeded")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) && !strings.Contains(err.Error(), context.DeadlineExceeded.Error()) {
+		t.Fatalf("deleteAllChats() error = %v, want context deadline exceeded", err)
+	}
+}
+
 func TestListChatsReturnsEmptyWhenGitHubValidationFails(t *testing.T) {
 	fakeAPI := newFakeGitHubContentsAPI(t)
 	fakeAPI.repoStatus = http.StatusInternalServerError
@@ -309,6 +441,7 @@ type fakeGitHubContentsAPI struct {
 	files             map[string]fakeGitHubFile
 	lastAuthorization string
 	repoStatus        int
+	requestDelay      time.Duration
 }
 
 type fakeGitHubFile struct {
@@ -329,6 +462,14 @@ func newFakeGitHubContentsAPI(t *testing.T) *fakeGitHubContentsAPI {
 
 func (f *fakeGitHubContentsAPI) handle(t *testing.T, w http.ResponseWriter, r *http.Request) {
 	t.Helper()
+
+	if f.requestDelay > 0 {
+		select {
+		case <-time.After(f.requestDelay):
+		case <-r.Context().Done():
+			return
+		}
+	}
 
 	if r.URL.Path == "/repos/Oblivionevil/Chatrepo" {
 		f.mu.Lock()
@@ -440,6 +581,13 @@ func (f *fakeGitHubContentsAPI) fileContents(t *testing.T, path string) []byte {
 		t.Fatalf("file %q was not written", path)
 	}
 	return file.content
+}
+
+func (f *fakeGitHubContentsAPI) hasFile(path string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, ok := f.files[path]
+	return ok
 }
 
 func fakeGitHubSHA(path string, data []byte) string {

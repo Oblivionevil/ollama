@@ -114,10 +114,7 @@ func (s *Server) deleteChatRemotely(session *store.AuthSession, chatID string) e
 	return s.deleteLocalChatCache(chatID)
 }
 
-func (s *Server) deleteAllChatsRemotely(session *store.AuthSession) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
+func (s *Server) deleteAllChatsRemotely(ctx context.Context, session *store.AuthSession) error {
 	if err := s.deleteAllChatsFromGitHub(ctx, session); err != nil {
 		return err
 	}

@@ -884,7 +884,7 @@ func (s *Server) deleteAllChats(w http.ResponseWriter, r *http.Request) error {
 		return fmt.Errorf("failed to prepare chats: %w", err)
 	}
 
-	if err := s.deleteAllChatsRemotely(session); err != nil {
+	if err := s.deleteAllChatsRemotely(r.Context(), session); err != nil {
 		return fmt.Errorf("failed to delete chats: %w", err)
 	}
 
