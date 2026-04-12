@@ -17,9 +17,9 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ANDROID_DIR="$REPO_ROOT/android"
-GO_MOBILE_PKG="$REPO_ROOT/app/cmd/android/ollama"
+GO_MOBILE_PKG="github.com/ollama/ollama/app/cmd/android/ollama"
 AAR_OUTPUT="$ANDROID_DIR/app/libs/ollama.aar"
-GOMOBILE_VERSION="${GOMOBILE_VERSION:-v0.0.0-20241204233305-ce44b2716d33}"
+GOMOBILE_VERSION="${GOMOBILE_VERSION:-latest}"
 GRADLE_BIN="${GRADLE_BIN:-gradle}"
 APP_VERSION_NAME="${APP_VERSION_NAME:-${VERSION:-0.0.0}}"
 APP_VERSION_CODE="${APP_VERSION_CODE:-1}"
@@ -38,6 +38,8 @@ cleanup_module_files() {
 }
 
 trap cleanup_module_files EXIT
+
+export GO111MODULE=on
 
 echo "=== Building Ollama Android App ==="
 

@@ -75,7 +75,8 @@ jobs:
       VERSION: ${{ needs.setup.outputs.version }}
       APP_VERSION_NAME: ${{ needs.setup.outputs.version }}
       APP_VERSION_CODE: ${{ github.run_number }}
-      GOMOBILE_VERSION: v0.0.0-20241204233305-ce44b2716d33
+      GOMOBILE_VERSION: latest
+      GO111MODULE: on
     steps:
       - uses: actions/checkout@v6
         with:
