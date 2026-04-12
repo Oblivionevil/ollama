@@ -102,9 +102,9 @@ jobs:
         run: |
           yes | sdkmanager --licenses >/dev/null || true
           sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME}}"
-          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018"
-          echo "ANDROID_NDK_HOME=${sdk_root}/ndk/27.2.12479018" >> "$GITHUB_ENV"
-          echo "ANDROID_NDK_ROOT=${sdk_root}/ndk/27.2.12479018" >> "$GITHUB_ENV"
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;28.2.13676358"
+          echo "ANDROID_NDK_HOME=${sdk_root}/ndk/28.2.13676358" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=${sdk_root}/ndk/28.2.13676358" >> "$GITHUB_ENV"
       - name: Configure Android signing inputs
         shell: bash
         env:

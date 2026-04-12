@@ -82,6 +82,18 @@ build_gojni() {
     local out_dir="$JNI_LIB_DIR/$abi"
     local cc="$ndk_bin/${clang_triple}26-clang"
     local cxx="$ndk_bin/${clang_triple}26-clang++"
+    local cgo_ldflags="${CGO_LDFLAGS:-}"
+
+    if [ "$goarch" = "arm64" ]; then
+        # Android 15 devices such as the OnePlus 13 can use 16 KB pages.
+        # arm64 shared libraries must be linked with a matching max page size
+        # or the process dies during native library loading.
+        if [ -n "$cgo_ldflags" ]; then
+            cgo_ldflags="$cgo_ldflags "
+        fi
+
+        cgo_ldflags="${cgo_ldflags}-Wl,-z,max-page-size=16384"
+    fi
 
     rm -rf "$work_dir"
     mkdir -p "$work_dir/src" "$out_dir"
@@ -104,7 +116,7 @@ EOF
         cd "$work_dir"
         GOOS=android GOARCH="$goarch" CGO_ENABLED=1 CC="$cc" CXX="$cxx" go mod tidy
         cd src/gobind
-        GOOS=android GOARCH="$goarch" CGO_ENABLED=1 CC="$cc" CXX="$cxx" \
+        GOOS=android GOARCH="$goarch" CGO_ENABLED=1 CC="$cc" CXX="$cxx" CGO_LDFLAGS="$cgo_ldflags" \
             go build -buildvcs=false -trimpath -buildmode=c-shared -o libgojni.so
     )
 
