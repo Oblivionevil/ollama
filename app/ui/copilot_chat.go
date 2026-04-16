@@ -612,6 +612,11 @@ func (s *Server) chatCopilot(ctx context.Context, w http.ResponseWriter, flusher
 		if delta == "" {
 			return nil
 		}
+		// Filter out placeholder dots that some models return instead of
+		// actual reasoning content (e.g. "..." from /responses summaries).
+		if strings.Trim(delta, ".… \t\n\r") == "" {
+			return nil
+		}
 		if thinkingTimeStart == nil || thinkingTimeEnd != nil {
 			now := time.Now()
 			thinkingTimeStart = &now

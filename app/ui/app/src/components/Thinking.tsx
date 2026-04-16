@@ -19,7 +19,8 @@ export default function Thinking({
 
   const activelyThinking = startTime && !endTime;
   const finishedThinking = startTime && endTime;
-  const hasThinkingContent = thinking.trim().length > 0;
+  const hasThinkingContent =
+    thinking.replace(/[\s.…]+/g, "").length > 0;
 
   // Auto-collapse when thinking is done (only if user hasn't manually interacted)
   useEffect(() => {
